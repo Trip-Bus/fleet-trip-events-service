@@ -1,0 +1,45 @@
+package com.tripbus.fleet.config;
+
+import com.tripbus.fleet.common.security.InternalTokenFilter;
+import com.tripbus.fleet.common.security.JsonSecurityHandlers;
+import com.tripbus.fleet.common.security.JwtRoleConverter;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
+import org.springframework.security.web.SecurityFilterChain;
+
+@Configuration
+@EnableMethodSecurity
+public class SecurityConfig {
+
+    @Bean
+    public SecurityFilterChain securityFilterChain(
+            HttpSecurity http,
+            JsonSecurityHandlers handlers,
+            @Value("${tripbus.internal-token}") String internalToken) throws Exception {
+        http
+                .csrf(AbstractHttpConfigurer::disable)
+                .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .authorizeHttpRequests(a -> a
+                        .requestMatchers("/actuator/health/**", "/actuator/info", "/actuator/prometheus").permitAll()
+                        .requestMatchers("/internal/**").hasRole(InternalTokenFilter.INTERNAL_ROLE)
+                        // Seguimiento del bus y línea de tiempo del viaje: lectura pública.
+                        .requestMatchers(HttpMethod.GET, "/buses/*/position", "/itineraries/*/bus-position",
+                                "/trips/*/timeline").permitAll()
+                        .anyRequest().authenticated())
+                .oauth2ResourceServer(o -> o
+                        .jwt(j -> j.jwtAuthenticationConverter(new JwtRoleConverter()))
+                        .authenticationEntryPoint(handlers.entryPoint()))
+                .exceptionHandling(e -> e
+                        .authenticationEntryPoint(handlers.entryPoint())
+                        .accessDeniedHandler(handlers.accessDeniedHandler()))
+                .addFilterBefore(new InternalTokenFilter(internalToken), BearerTokenAuthenticationFilter.class);
+        return http.build();
+    }
+}
