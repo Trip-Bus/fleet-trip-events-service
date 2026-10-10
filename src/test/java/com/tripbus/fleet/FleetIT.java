@@ -10,11 +10,10 @@ import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.connection.stream.StreamOffset;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -23,9 +22,14 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -41,13 +45,27 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@EnabledIfEnvironmentVariable(named = "TRIPBUS_IT", matches = "true")
+/**
+ * Integración contra PostgreSQL 16 y Redis 7 reales (Testcontainers, requiere Docker): Flyway aplica
+ * las migraciones REALES de db/migration, la telemetría pasa por el stream de Redis, el outbox se
+ * publica en el bus de eventos y las novedades del viaje respetan la empresa del conductor.
+ * Catalog se reemplaza por un mock (paradas de la ruta).
+ */
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("it")
 @TestPropertySource(properties = "TELEMETRY_STREAM=tripbus:telemetry:test")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@Testcontainers
 class FleetIT {
+
+    @Container
+    @ServiceConnection
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
+
+    @Container
+    @ServiceConnection(name = "redis")
+    static GenericContainer<?> redisContainer = new GenericContainer<>("redis:7-alpine").withExposedPorts(6379);
 
     @Autowired
     private MockMvc mvc;
@@ -68,7 +86,7 @@ class FleetIT {
     @Autowired
     private Flyway flyway;
 
-    @MockBean
+    @MockitoBean
     private CatalogClient catalogClient;
 
     private final UUID itineraryId = UUID.randomUUID();

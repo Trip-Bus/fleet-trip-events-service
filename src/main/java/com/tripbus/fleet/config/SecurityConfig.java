@@ -32,6 +32,10 @@ public class SecurityConfig {
                         // Seguimiento del bus y línea de tiempo del viaje: lectura pública.
                         .requestMatchers(HttpMethod.GET, "/buses/*/position", "/itineraries/*/bus-position",
                                 "/trips/*/timeline").permitAll()
+                        // Swagger (en prod springdoc está apagado y estas rutas dan 404) y página de error.
+                        .requestMatchers(HttpMethod.GET, "/v3/api-docs/**", "/swagger-ui/**",
+                                "/swagger-ui.html").permitAll()
+                        .requestMatchers("/error").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(o -> o
                         .jwt(j -> j.jwtAuthenticationConverter(new JwtRoleConverter()))
