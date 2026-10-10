@@ -1,0 +1,84 @@
+# Entorno QA de fleet-trip-events-service SOLO (perfil Spring "qa"): su propia PostgreSQL, Redis con
+# contraseña y el servicio construido desde este repo.
+#
+#   cp .env.example .env           # valores de QA local (el .env no se sube a git)
+#   docker compose up -d --build   # levantar
+#   docker compose ps              # esperar a que todo esté "healthy"
+#   docker compose logs -f fleet-trip-events-service
+#   docker compose down            # detener conservando datos (down -v los borra)
+#
+# Qué se puede probar con este compose solo:
+#   - GET /buses/{id}/position, /itineraries/{id}/bus-position y /trips/{id}/timeline (públicos)
+#     responden, pero sin catalog no llegan viajes (ItineraryPublished): lo esperado es 404 o vacío.
+#   - El simulador GPS (encendido en QA) no mueve nada hasta que existan viajes en curso.
+#   - POST /telemetry/position y POST /trips/{id}/events exigen un JWT de identity (CONDUCTOR,
+#     OPERADOR o ADMIN): pruébalos con el compose general de API-gateway, que trae identity y catalog.
+# identity (18001) y catalog (18002) se buscan en tu PC vía host.docker.internal.
+#
+# OJO: no lo corras a la vez que el compose general de API-gateway: usan los mismos puertos
+# (18005, 18100, 18105) y fallaría con "port is already allocated".
+name: tripbus-fleet-trip-events-service
+
+services:
+  fleet-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: tripbus_fleet
+      POSTGRES_USER: ${DB_USERNAME:?Falta DB_USERNAME en .env}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Falta DB_PASSWORD en .env}
+    ports:
+      - "18105:5432"
+    volumes:
+      - fleet-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?Falta REDIS_PASSWORD en .env}"]
+    environment:
+      # redis-cli lee la contraseña de aquí (así no aparece en la línea de comandos).
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
+    ports:
+      - "18100:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  fleet-trip-events-service:
+    build:
+      context: .
+      args:
+        GIT_COMMIT: qa-local
+    image: ghcr.io/trip-bus/fleet-trip-events-service:qa-local
+    env_file: .env
+    # Estas ganan sobre .env: dentro de Docker se habla con los contenedores por nombre y puerto
+    # interno, y con los servicios que corren en tu PC por host.docker.internal.
+    environment:
+      SPRING_PROFILES_ACTIVE: qa
+      DB_HOST: fleet-db
+      DB_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      IDENTITY_JWKS_URI: http://host.docker.internal:18001/.well-known/jwks.json
+      CATALOG_URL: http://host.docker.internal:18002
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "18005:18005"
+    depends_on:
+      fleet-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  fleet-db-data:
+  redis-data:

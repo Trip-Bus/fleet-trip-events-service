@@ -1,0 +1,10 @@
+# Perfil "qa": Docker Compose en el computador del desarrollador (activa también "desplegado").
+logging:
+  level:
+    com.tripbus: DEBUG
+
+tripbus:
+  fleet:
+    # En QA el simulador GPS está encendido por defecto: mueve los buses de los viajes en curso
+    # para poder ver el seguimiento sin conductores reales.
+    simulator-enabled: ${SIMULATOR_ENABLED:true}
