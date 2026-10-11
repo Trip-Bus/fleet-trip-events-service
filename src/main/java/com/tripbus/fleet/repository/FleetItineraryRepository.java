@@ -19,4 +19,7 @@ public interface FleetItineraryRepository extends JpaRepository<FleetItinerary, 
             order by f.fechaSalida
             """)
     List<FleetItinerary> findEnCurso(@Param("now") Instant now, @Param("desde") Instant desde, Pageable pageable);
+
+    /** ¿La empresa opera algún viaje con este bus? (autorización de la telemetría, US-038). */
+    boolean existsByBusIdAndCompanyId(UUID busId, UUID companyId);
 }

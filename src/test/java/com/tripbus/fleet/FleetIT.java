@@ -141,7 +141,9 @@ class FleetIT {
             telemetryService.process(fields);
             telemetryService.process(fields); // idempotente por eventId
         }
-        assertThat(jdbc.queryForObject("select count(*) from bus_positions", Long.class)).isEqualTo(1L);
+        // Una fila por posición encolada (otras pruebas también encolan en el mismo stream).
+        assertThat(jdbc.queryForObject("select count(*) from bus_positions", Long.class))
+                .isEqualTo((long) encoladas.size());
 
         mvc.perform(get("/itineraries/{id}/bus-position", itineraryId))
                 .andExpect(status().isOk())
@@ -171,6 +173,53 @@ class FleetIT {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"busId\":\"%s\",\"lat\":5,\"lng\":-74}".formatted(busId)))
                 .andExpect(status().isForbidden());
+    }
+
+    private org.springframework.test.web.servlet.ResultActions enviarPosicion(RequestPostProcessor usuario, UUID bus,
+                                                                             UUID itinerario) throws Exception {
+        String itinerarioJson = itinerario != null ? ",\"itineraryId\":\"%s\"".formatted(itinerario) : "";
+        return mvc.perform(post("/telemetry/position").with(usuario).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"busId\":\"%s\"%s,\"lat\":5.1,\"lng\":-74.6}".formatted(bus, itinerarioJson)));
+    }
+
+    @Test
+    void soloSePublicanPosicionesDeBusesDeLaPropiaEmpresa() throws Exception {
+        // Conductor de la empresa del bus, sin itinerario: el bus opera algún viaje de su empresa.
+        enviarPosicion(conductor(companyId), busId, null).andExpect(status().isAccepted());
+
+        // Conductor de otra empresa, con y sin itinerario.
+        enviarPosicion(conductor(UUID.randomUUID()), busId, itineraryId)
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("NOT_YOUR_COMPANY"));
+        enviarPosicion(conductor(UUID.randomUUID()), busId, null)
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("NOT_YOUR_COMPANY"));
+
+        // Token sin companyId.
+        enviarPosicion(jwt().jwt(j -> j.subject(UUID.randomUUID().toString()).claim("role", "OPERADOR"))
+                        .authorities(new SimpleGrantedAuthority("ROLE_OPERADOR")), busId, null)
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("NOT_YOUR_COMPANY"));
+
+        // itineraryId de otro bus.
+        enviarPosicion(conductor(companyId), UUID.randomUUID(), itineraryId)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("BUS_ITINERARY_MISMATCH"));
+
+        // Itinerario inexistente.
+        enviarPosicion(conductor(companyId), busId, UUID.randomUUID())
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("ITINERARY_NOT_FOUND"));
+    }
+
+    @Test
+    void elAdminPublicaDeCualquierBusPeroElItinerarioDebeCoincidir() throws Exception {
+        RequestPostProcessor admin = jwt().jwt(j -> j.subject(UUID.randomUUID().toString()).claim("role", "ADMIN"))
+                .authorities(new SimpleGrantedAuthority("ROLE_ADMIN"));
+        enviarPosicion(admin, UUID.randomUUID(), null).andExpect(status().isAccepted());
+        enviarPosicion(admin, UUID.randomUUID(), itineraryId)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("BUS_ITINERARY_MISMATCH"));
     }
 
     @Test

@@ -38,7 +38,10 @@ public class FleetController {
     /** US-038: ingesta de posición GPS. 202: se procesa de forma asíncrona. */
     @PostMapping("/telemetry/position")
     @PreAuthorize("hasAnyRole('CONDUCTOR', 'OPERADOR', 'ADMIN')")
-    public ResponseEntity<Map<String, String>> position(@Valid @RequestBody PositionRequest request) {
+    public ResponseEntity<Map<String, String>> position(@Valid @RequestBody PositionRequest request,
+                                                        Authentication authentication) {
+        telemetryService.autorizar(request, CurrentUser.companyId(authentication),
+                CurrentUser.hasRole(authentication, "ADMIN"));
         String eventId = telemetryService.ingest(request);
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(Map.of("eventId", eventId, "estado", "ENCOLADA"));
     }
