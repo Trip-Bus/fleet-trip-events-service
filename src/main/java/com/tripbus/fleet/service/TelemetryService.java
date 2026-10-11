@@ -5,7 +5,9 @@ import com.tripbus.fleet.common.error.ApiException;
 import com.tripbus.fleet.config.FleetProperties;
 import com.tripbus.fleet.domain.BusPosition;
 import com.tripbus.fleet.events.FleetEvents;
+import com.tripbus.fleet.domain.FleetItinerary;
 import com.tripbus.fleet.repository.BusPositionRepository;
+import com.tripbus.fleet.repository.FleetItineraryRepository;
 import com.tripbus.fleet.web.dto.PositionRequest;
 import com.tripbus.fleet.web.dto.PositionResponse;
 import org.slf4j.Logger;
@@ -38,20 +40,48 @@ public class TelemetryService {
 
     private final StringRedisTemplate redis;
     private final BusPositionRepository positionRepository;
+    private final FleetItineraryRepository itineraryRepository;
     private final Outbox outbox;
     private final ObjectMapper objectMapper;
     private final FleetProperties properties;
     private final Clock clock;
     private final java.util.concurrent.atomic.AtomicLong ingested = new java.util.concurrent.atomic.AtomicLong();
 
-    public TelemetryService(StringRedisTemplate redis, BusPositionRepository positionRepository, Outbox outbox,
+    public TelemetryService(StringRedisTemplate redis, BusPositionRepository positionRepository,
+                            FleetItineraryRepository itineraryRepository, Outbox outbox,
                             ObjectMapper objectMapper, FleetProperties properties, Clock clock) {
         this.redis = redis;
         this.positionRepository = positionRepository;
+        this.itineraryRepository = itineraryRepository;
         this.outbox = outbox;
         this.objectMapper = objectMapper;
         this.properties = properties;
         this.clock = clock;
+    }
+
+    /**
+     * US-038/US-005: quien publica la posición debe operar el bus. Fuera de ADMIN, el bus (y el
+     * itinerario, si se envía) debe ser de la empresa del token. Solo la llama el controlador:
+     * el simulador GPS usa {@link #ingest} directamente, sin usuario.
+     */
+    public void autorizar(PositionRequest request, UUID companyId, boolean esAdmin) {
+        if (request.itineraryId() != null) {
+            FleetItinerary itinerary = itineraryRepository.findById(request.itineraryId())
+                    .orElseThrow(() -> ApiException.notFound("ITINERARY_NOT_FOUND", "Itinerario no encontrado"));
+            if (!itinerary.getBusId().equals(request.busId())) {
+                throw ApiException.badRequest("BUS_ITINERARY_MISMATCH", "El bus no corresponde al itinerario");
+            }
+            if (!esAdmin && (companyId == null || !companyId.equals(itinerary.getCompanyId()))) {
+                throw notYourCompany();
+            }
+        } else if (!esAdmin && (companyId == null
+                || !itineraryRepository.existsByBusIdAndCompanyId(request.busId(), companyId))) {
+            throw notYourCompany();
+        }
+    }
+
+    private static ApiException notYourCompany() {
+        return ApiException.forbidden("NOT_YOUR_COMPANY", "Solo puede enviar posiciones de buses de su empresa");
     }
 
     /** Valida y encola. Devuelve el eventId asignado a la posición. */
