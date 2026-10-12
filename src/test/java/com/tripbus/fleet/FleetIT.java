@@ -31,6 +31,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
@@ -38,6 +39,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -151,11 +153,14 @@ class FleetIT {
                 .andExpect(jsonPath("$.posicion.lat").value(5.0))
                 .andExpect(jsonPath("$.paradas.length()").value(3));
 
-        // Transactional outbox → bus de eventos con eventId = id del outbox.
+        // Transactional outbox → bus de eventos con eventId = id del outbox. El relay programado también
+        // corre y puede tomar las filas (SKIP LOCKED) antes que esta llamada: se espera a que haga commit.
         relay.relay();
-        assertThat(jdbc.queryForObject("select count(*) from outbox where publicado_en is null", Long.class)).isZero();
-        assertThat(redis.opsForStream().read(StreamOffset.fromStart("tripbus:events:test")))
-                .anyMatch(r -> "PositionUpdated".equals(r.getValue().get("type")));
+        await().atMost(Duration.ofSeconds(5)).pollInterval(Duration.ofMillis(100)).untilAsserted(() -> {
+            assertThat(jdbc.queryForObject("select count(*) from outbox where publicado_en is null", Long.class)).isZero();
+            assertThat(redis.opsForStream().read(StreamOffset.fromStart("tripbus:events:test")))
+                    .anyMatch(r -> "PositionUpdated".equals(r.getValue().get("type")));
+        });
     }
 
     @Test
