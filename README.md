@@ -14,10 +14,16 @@ parada, retraso, desvío, fin). Incluye el **simulador GPS** del MVP.
 | Método | Endpoint | Descripción |
 |---|---|---|
 | POST | `/telemetry/position` | Ingesta GPS (CONDUCTOR/OPERADOR/ADMIN). Responde 202: se encola en `tripbus:telemetry` y un consumidor independiente la procesa. |
-| GET | `/buses/{id}/position` | Última posición conocida (Redis). Pública. |
-| GET | `/itineraries/{id}/bus-position` | Dónde va mi bus: posición + estado + paradas para el mapa. Pública. |
+| GET | `/buses/{id}/position` | Última posición conocida (Redis). Pública, solo si el bus tiene un viaje en ventana activa; si no, 404 `NO_ACTIVE_TRIP`. |
+| GET | `/itineraries/{id}/bus-position` | Dónde va mi bus: estado + paradas para el mapa y la posición (en `null` fuera de la ventana activa o si está cancelado). Pública. |
 | POST | `/trips/{id}/events` `{tipo, descripcion, detalle}` | Novedad del viaje (conductor/operador **de la misma empresa**, o ADMIN). |
 | GET | `/trips/{id}/timeline` | Línea de tiempo de novedades. Pública. |
+
+**Posición solo durante el viaje (US-039, US-047):** la ventana activa de un itinerario va de
+`fechaSalida - 30 min` a `fechaLlegada + 30 min` (`tripbus.fleet.tracking-window-before` / `-after`)
+y nunca aplica si está cancelado. Fuera de ella la posición se guarda en `bus_positions` (auditoría)
+pero no se expone ni se publica `PositionUpdated`. Estado: `CANCELADO` > `FINALIZADO` (después de
+`fechaLlegada`) > `PROGRAMADO` > `SIN_SENAL` > `EN_RUTA`.
 
 **Transactional outbox**: `PositionUpdated` y `TripEventReported` se guardan en la tabla `outbox`
 en la misma transacción y un *relay* los publica (`FOR UPDATE SKIP LOCKED`, seguro con varias réplicas).

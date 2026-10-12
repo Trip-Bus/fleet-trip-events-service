@@ -44,18 +44,21 @@ public class TelemetryService {
     private final Outbox outbox;
     private final ObjectMapper objectMapper;
     private final FleetProperties properties;
+    private final TrackingWindow trackingWindow;
     private final Clock clock;
     private final java.util.concurrent.atomic.AtomicLong ingested = new java.util.concurrent.atomic.AtomicLong();
 
     public TelemetryService(StringRedisTemplate redis, BusPositionRepository positionRepository,
                             FleetItineraryRepository itineraryRepository, Outbox outbox,
-                            ObjectMapper objectMapper, FleetProperties properties, Clock clock) {
+                            ObjectMapper objectMapper, FleetProperties properties, TrackingWindow trackingWindow,
+                            Clock clock) {
         this.redis = redis;
         this.positionRepository = positionRepository;
         this.itineraryRepository = itineraryRepository;
         this.outbox = outbox;
         this.objectMapper = objectMapper;
         this.properties = properties;
+        this.trackingWindow = trackingWindow;
         this.clock = clock;
     }
 
@@ -140,6 +143,16 @@ public class TelemetryService {
                 clock.instant()));
 
         PositionResponse view = toView(position);
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                cacheLastPosition(view);
+            }
+        });
+        // US-039/US-047: fuera de un viaje en ventana activa la posición solo queda para auditoría.
+        if (!trackingWindow.isActivePosition(busId, itineraryId, view.timestamp())) {
+            return;
+        }
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("busId", busId);
         payload.put("itineraryId", itineraryId);
@@ -149,13 +162,6 @@ public class TelemetryService {
         payload.put("rumbo", view.rumbo());
         payload.put("timestamp", view.timestamp());
         outbox.add(FleetEvents.POSITION_UPDATED, payload);
-
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override
-            public void afterCommit() {
-                cacheLastPosition(view);
-            }
-        });
     }
 
     public Optional<PositionResponse> lastByBus(UUID busId) {

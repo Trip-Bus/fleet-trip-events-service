@@ -83,6 +83,10 @@ tripbus:
     catalog-url: ${CATALOG_URL:http://localhost:18002}
     # Simulador GPS del MVP (job separado): mueve los buses de los viajes en curso.
     simulator-enabled: ${SIMULATOR_ENABLED:false}
+    # US-039/US-047: la posición solo es pública mientras el bus hace un viaje
+    # (de fechaSalida - before a fechaLlegada + after; nunca si el viaje está cancelado).
+    tracking-window-before: 30m
+    tracking-window-after: 30m
   jobs:
     simulator-interval-ms: 5000
     outbox-relay-ms: 500

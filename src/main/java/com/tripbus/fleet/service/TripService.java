@@ -32,17 +32,19 @@ public class TripService {
     private final TripEventRepository eventRepository;
     private final RouteStopsCache stopsCache;
     private final TelemetryService telemetryService;
+    private final TrackingWindow trackingWindow;
     private final Outbox outbox;
     private final ObjectMapper objectMapper;
     private final Clock clock;
 
     public TripService(FleetItineraryRepository itineraryRepository, TripEventRepository eventRepository,
-                       RouteStopsCache stopsCache, TelemetryService telemetryService, Outbox outbox,
-                       ObjectMapper objectMapper, Clock clock) {
+                       RouteStopsCache stopsCache, TelemetryService telemetryService, TrackingWindow trackingWindow,
+                       Outbox outbox, ObjectMapper objectMapper, Clock clock) {
         this.itineraryRepository = itineraryRepository;
         this.eventRepository = eventRepository;
         this.stopsCache = stopsCache;
         this.telemetryService = telemetryService;
+        this.trackingWindow = trackingWindow;
         this.outbox = outbox;
         this.objectMapper = objectMapper;
         this.clock = clock;
@@ -94,15 +96,20 @@ public class TripService {
     public ItineraryTracking tracking(UUID itineraryId) {
         FleetItinerary itinerary = itineraryRepository.findById(itineraryId)
                 .orElseThrow(() -> ApiException.notFound("TRIP_NOT_FOUND", "El viaje no existe"));
-        PositionResponse position = telemetryService.lastByItinerary(itineraryId).orElse(null);
         Instant now = clock.instant();
+        // US-039/US-047: la posición solo se muestra durante la ventana activa del viaje.
+        PositionResponse position = trackingWindow.isActive(itinerary, now)
+                ? telemetryService.lastByItinerary(itineraryId)
+                        .filter(p -> !p.timestamp().isBefore(trackingWindow.start(itinerary)))
+                        .orElse(null)
+                : null;
         String estado;
         if (itinerary.isCancelado()) {
             estado = "CANCELADO";
+        } else if (now.isAfter(itinerary.getFechaLlegada())) {
+            estado = "FINALIZADO";
         } else if (now.isBefore(itinerary.getFechaSalida())) {
             estado = "PROGRAMADO";
-        } else if (now.isAfter(itinerary.getFechaLlegada()) && position == null) {
-            estado = "FINALIZADO";
         } else if (position == null || Duration.between(position.timestamp(), now).toMinutes() > 5) {
             estado = "SIN_SENAL";
         } else {
@@ -114,6 +121,16 @@ public class TripService {
                 .toList();
         return new ItineraryTracking(itineraryId, itinerary.getBusId(), itinerary.getOrigen(), itinerary.getDestino(),
                 itinerary.getFechaSalida(), itinerary.getFechaLlegada(), estado, position, paradas);
+    }
+
+    /** Última posición del bus, solo si está haciendo un viaje (itinerario en ventana activa). */
+    @Transactional(readOnly = true)
+    public PositionResponse busPosition(UUID busId) {
+        FleetItinerary active = trackingWindow.activeForBus(busId, clock.instant())
+                .orElseThrow(() -> ApiException.notFound("NO_ACTIVE_TRIP", "El bus no está haciendo ningún viaje"));
+        return telemetryService.lastByBus(busId)
+                .filter(p -> !p.timestamp().isBefore(trackingWindow.start(active)))
+                .orElseThrow(() -> ApiException.notFound("POSITION_NOT_FOUND", "No hay posiciones para este bus"));
     }
 
     private TripEventResponse toResponse(TripEvent e) {
