@@ -1,6 +1,5 @@
 package com.tripbus.fleet.web;
 
-import com.tripbus.fleet.common.error.ApiException;
 import com.tripbus.fleet.common.security.CurrentUser;
 import com.tripbus.fleet.service.TelemetryService;
 import com.tripbus.fleet.service.TripService;
@@ -38,15 +37,18 @@ public class FleetController {
     /** US-038: ingesta de posición GPS. 202: se procesa de forma asíncrona. */
     @PostMapping("/telemetry/position")
     @PreAuthorize("hasAnyRole('CONDUCTOR', 'OPERADOR', 'ADMIN')")
-    public ResponseEntity<Map<String, String>> position(@Valid @RequestBody PositionRequest request) {
+    public ResponseEntity<Map<String, String>> position(@Valid @RequestBody PositionRequest request,
+                                                        Authentication authentication) {
+        telemetryService.autorizar(request, CurrentUser.companyId(authentication),
+                CurrentUser.hasRole(authentication, "ADMIN"));
         String eventId = telemetryService.ingest(request);
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(Map.of("eventId", eventId, "estado", "ENCOLADA"));
     }
 
+    /** Pública, pero solo mientras el bus hace un viaje (404 NO_ACTIVE_TRIP si no). */
     @GetMapping("/buses/{id}/position")
     public PositionResponse busPosition(@PathVariable UUID id) {
-        return telemetryService.lastByBus(id)
-                .orElseThrow(() -> ApiException.notFound("POSITION_NOT_FOUND", "No hay posiciones para este bus"));
+        return tripService.busPosition(id);
     }
 
     /** US-039: dónde va mi bus. */

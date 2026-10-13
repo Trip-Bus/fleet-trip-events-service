@@ -1,6 +1,7 @@
 package com.tripbus.fleet.client;
 
 import com.tripbus.fleet.config.FleetProperties;
+import com.tripbus.fleet.config.RequestIdPropagationInterceptor;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
@@ -18,7 +19,11 @@ public class CatalogClient {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(1000);
         factory.setReadTimeout(3000);
-        this.restClient = RestClient.builder().baseUrl(properties.catalogUrl()).requestFactory(factory).build();
+        this.restClient = RestClient.builder()
+                .baseUrl(properties.catalogUrl())
+                .requestFactory(factory)
+                .requestInterceptor(new RequestIdPropagationInterceptor())
+                .build();
     }
 
     public record Stop(int orden, String nombre, double lat, double lng, int minutosDesdeSalida) {

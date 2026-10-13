@@ -5,7 +5,9 @@ import com.tripbus.fleet.common.error.ApiException;
 import com.tripbus.fleet.config.FleetProperties;
 import com.tripbus.fleet.domain.BusPosition;
 import com.tripbus.fleet.events.FleetEvents;
+import com.tripbus.fleet.domain.FleetItinerary;
 import com.tripbus.fleet.repository.BusPositionRepository;
+import com.tripbus.fleet.repository.FleetItineraryRepository;
 import com.tripbus.fleet.web.dto.PositionRequest;
 import com.tripbus.fleet.web.dto.PositionResponse;
 import org.slf4j.Logger;
@@ -38,20 +40,51 @@ public class TelemetryService {
 
     private final StringRedisTemplate redis;
     private final BusPositionRepository positionRepository;
+    private final FleetItineraryRepository itineraryRepository;
     private final Outbox outbox;
     private final ObjectMapper objectMapper;
     private final FleetProperties properties;
+    private final TrackingWindow trackingWindow;
     private final Clock clock;
     private final java.util.concurrent.atomic.AtomicLong ingested = new java.util.concurrent.atomic.AtomicLong();
 
-    public TelemetryService(StringRedisTemplate redis, BusPositionRepository positionRepository, Outbox outbox,
-                            ObjectMapper objectMapper, FleetProperties properties, Clock clock) {
+    public TelemetryService(StringRedisTemplate redis, BusPositionRepository positionRepository,
+                            FleetItineraryRepository itineraryRepository, Outbox outbox,
+                            ObjectMapper objectMapper, FleetProperties properties, TrackingWindow trackingWindow,
+                            Clock clock) {
         this.redis = redis;
         this.positionRepository = positionRepository;
+        this.itineraryRepository = itineraryRepository;
         this.outbox = outbox;
         this.objectMapper = objectMapper;
         this.properties = properties;
+        this.trackingWindow = trackingWindow;
         this.clock = clock;
+    }
+
+    /**
+     * US-038/US-005: quien publica la posición debe operar el bus. Fuera de ADMIN, el bus (y el
+     * itinerario, si se envía) debe ser de la empresa del token. Solo la llama el controlador:
+     * el simulador GPS usa {@link #ingest} directamente, sin usuario.
+     */
+    public void autorizar(PositionRequest request, UUID companyId, boolean esAdmin) {
+        if (request.itineraryId() != null) {
+            FleetItinerary itinerary = itineraryRepository.findById(request.itineraryId())
+                    .orElseThrow(() -> ApiException.notFound("ITINERARY_NOT_FOUND", "Itinerario no encontrado"));
+            if (!itinerary.getBusId().equals(request.busId())) {
+                throw ApiException.badRequest("BUS_ITINERARY_MISMATCH", "El bus no corresponde al itinerario");
+            }
+            if (!esAdmin && (companyId == null || !companyId.equals(itinerary.getCompanyId()))) {
+                throw notYourCompany();
+            }
+        } else if (!esAdmin && (companyId == null
+                || !itineraryRepository.existsByBusIdAndCompanyId(request.busId(), companyId))) {
+            throw notYourCompany();
+        }
+    }
+
+    private static ApiException notYourCompany() {
+        return ApiException.forbidden("NOT_YOUR_COMPANY", "Solo puede enviar posiciones de buses de su empresa");
     }
 
     /** Valida y encola. Devuelve el eventId asignado a la posición. */
@@ -110,6 +143,16 @@ public class TelemetryService {
                 clock.instant()));
 
         PositionResponse view = toView(position);
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                cacheLastPosition(view);
+            }
+        });
+        // US-039/US-047: fuera de un viaje en ventana activa la posición solo queda para auditoría.
+        if (!trackingWindow.isActivePosition(busId, itineraryId, view.timestamp())) {
+            return;
+        }
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("busId", busId);
         payload.put("itineraryId", itineraryId);
@@ -119,13 +162,6 @@ public class TelemetryService {
         payload.put("rumbo", view.rumbo());
         payload.put("timestamp", view.timestamp());
         outbox.add(FleetEvents.POSITION_UPDATED, payload);
-
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override
-            public void afterCommit() {
-                cacheLastPosition(view);
-            }
-        });
     }
 
     public Optional<PositionResponse> lastByBus(UUID busId) {

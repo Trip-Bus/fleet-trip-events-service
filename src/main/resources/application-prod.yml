@@ -1,0 +1,17 @@
+# Perfil "prod": servidor de producción (activa también "desplegado").
+logging:
+  level:
+    com.tripbus: INFO
+
+# Swagger/OpenAPI apagado en producción (solo IDE y QA).
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+
+tripbus:
+  fleet:
+    # En PROD el GPS viene de los conductores (POST /telemetry/position), así que el simulador va
+    # apagado. Para una demo del MVP se puede encender con SIMULATOR_ENABLED=true.
+    simulator-enabled: ${SIMULATOR_ENABLED:false}
