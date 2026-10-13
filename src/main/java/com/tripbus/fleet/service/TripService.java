@@ -22,11 +22,12 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.UUID;
 
 @Service
 public class TripService {
+
+    static final int MAX_IDEMPOTENCY_KEY = 100;
 
     private final FleetItineraryRepository itineraryRepository;
     private final TripEventRepository eventRepository;
@@ -52,27 +53,62 @@ public class TripService {
 
     /**
      * US-046: reportar una novedad. Un conductor/operador solo puede reportar sobre viajes
-     * de su propia empresa (US-005). El evento va al outbox en la misma transacción.
+     * de su propia empresa (US-005); si ni el token ni el viaje tienen empresa, solo un ADMIN.
+     * Con Idempotency-Key, repetir la petición en el mismo viaje devuelve la novedad ya creada.
+     * El evento va al outbox en la misma transacción.
      */
     @Transactional
     public TripEventResponse report(UUID itineraryId, TripEventType tipo, String descripcion,
                                     Map<String, Object> detalle, UUID userId, boolean isAdmin, UUID companyId,
-                                    String origen) {
-        FleetItinerary itinerary = itineraryRepository.findById(itineraryId)
+                                    String origen, String idempotencyKey) {
+        if (idempotencyKey != null && (idempotencyKey.isBlank() || idempotencyKey.length() > MAX_IDEMPOTENCY_KEY)) {
+            throw ApiException.badRequest("INVALID_IDEMPOTENCY_KEY",
+                    "Idempotency-Key debe tener entre 1 y " + MAX_IDEMPOTENCY_KEY + " caracteres");
+        }
+        // Bloquea el viaje: dos novedades simultáneas no pueden saltarse el orden ni el Idempotency-Key.
+        FleetItinerary itinerary = itineraryRepository.findForUpdate(itineraryId)
                 .orElseThrow(() -> ApiException.notFound("TRIP_NOT_FOUND", "El viaje no existe"));
-        if (!isAdmin && userId != null && !Objects.equals(companyId, itinerary.getCompanyId())) {
+        if (!isAdmin && (companyId == null || !companyId.equals(itinerary.getCompanyId()))) {
             throw ApiException.forbidden("NOT_YOUR_COMPANY", "Solo puede reportar novedades de viajes de su empresa");
         }
-        return record(itinerary, tipo, descripcion, detalle, userId, origen);
+        if (idempotencyKey != null) {
+            var previa = eventRepository.findByItineraryIdAndIdempotencyKey(itineraryId, idempotencyKey);
+            if (previa.isPresent()) {
+                return toResponse(previa.get());
+            }
+        }
+        return record(itinerary, tipo, descripcion, detalle, userId, origen, idempotencyKey);
     }
 
-    /** Registra el evento + outbox. Requiere transacción. */
+    /**
+     * Orden de las novedades del viaje: INICIO una sola vez; LLEGADA_PARADA, RETRASO y DESVIO entre
+     * INICIO y FIN; FIN después de INICIO y una sola vez.
+     */
+    public boolean permits(UUID itineraryId, TripEventType tipo) {
+        boolean iniciado = eventRepository.existsByItineraryIdAndTipo(itineraryId, TripEventType.INICIO);
+        if (tipo == TripEventType.INICIO) {
+            return !iniciado;
+        }
+        return iniciado && !eventRepository.existsByItineraryIdAndTipo(itineraryId, TripEventType.FIN);
+    }
+
+    /** Registra el evento + outbox (409 INVALID_TRIP_EVENT si rompe el orden). Requiere transacción. */
     public TripEventResponse record(FleetItinerary itinerary, TripEventType tipo, String descripcion,
                              Map<String, Object> detalle, UUID userId, String origen) {
+        return record(itinerary, tipo, descripcion, detalle, userId, origen, null);
+    }
+
+    private TripEventResponse record(FleetItinerary itinerary, TripEventType tipo, String descripcion,
+                                     Map<String, Object> detalle, UUID userId, String origen, String idempotencyKey) {
+        if (!permits(itinerary.getItineraryId(), tipo)) {
+            throw ApiException.conflict("INVALID_TRIP_EVENT", tipo == TripEventType.INICIO
+                    ? "El viaje ya tiene INICIO"
+                    : tipo + " solo se permite después de INICIO y antes de FIN");
+        }
         Instant now = clock.instant();
         String detalleJson = toJson(detalle);
         TripEvent event = eventRepository.save(new TripEvent(itinerary.getItineraryId(), tipo, descripcion,
-                detalleJson, userId, origen, now));
+                detalleJson, userId, origen, now, idempotencyKey));
 
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("tripEventId", event.getId());

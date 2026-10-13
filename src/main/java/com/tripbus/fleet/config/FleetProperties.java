@@ -12,7 +12,10 @@ public record FleetProperties(
         String catalogUrl,
         boolean simulatorEnabled,
         Duration trackingWindowBefore,
-        Duration trackingWindowAfter) {
+        Duration trackingWindowAfter,
+        String telemetryDlqStream,
+        Duration telemetryRetryIdle,
+        int telemetryMaxDeliveries) {
 
     public FleetProperties {
         telemetryStream = telemetryStream != null ? telemetryStream : "tripbus:telemetry";
@@ -20,5 +23,8 @@ public record FleetProperties(
         maxPositionAge = maxPositionAge != null ? maxPositionAge : Duration.ofMinutes(10);
         trackingWindowBefore = trackingWindowBefore != null ? trackingWindowBefore : Duration.ofMinutes(30);
         trackingWindowAfter = trackingWindowAfter != null ? trackingWindowAfter : Duration.ofMinutes(30);
+        telemetryDlqStream = telemetryDlqStream != null ? telemetryDlqStream : "tripbus:telemetry:dlq";
+        telemetryRetryIdle = telemetryRetryIdle != null ? telemetryRetryIdle : Duration.ofSeconds(30);
+        telemetryMaxDeliveries = telemetryMaxDeliveries > 0 ? telemetryMaxDeliveries : 5;
     }
 }

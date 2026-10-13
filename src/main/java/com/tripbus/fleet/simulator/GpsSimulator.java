@@ -22,6 +22,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
@@ -89,25 +90,35 @@ public class GpsSimulator {
         }
 
         tx.executeWithoutResult(s -> {
-            FleetItinerary it = itineraryRepository.findById(itinerary.getItineraryId()).orElseThrow();
+            // Mismo bloqueo que las novedades por API: el orden INICIO → paradas → FIN se respeta.
+            FleetItinerary it = itineraryRepository.findForUpdate(itinerary.getItineraryId()).orElseThrow();
+            UUID id = it.getItineraryId();
             int last = it.getSimUltimaParada();
             if (last < 0) {
-                tripService.record(it, TripEventType.INICIO, "El bus salió de " + stops.get(0).getNombre(),
-                        Map.of("parada", stops.get(0).getNombre()), null, "SIMULADOR");
+                // Si el conductor ya reportó INICIO, el simulador no lo repite.
+                if (tripService.permits(id, TripEventType.INICIO)) {
+                    tripService.record(it, TripEventType.INICIO, "El bus salió de " + stops.get(0).getNombre(),
+                            Map.of("parada", stops.get(0).getNombre()), null, "SIMULADOR");
+                }
                 last = 0;
             }
             for (int i = last + 1; i < stops.size() - 1; i++) {
                 if (stops.get(i).getMinutosDesdeSalida() <= elapsedMin) {
-                    tripService.record(it, TripEventType.LLEGADA_PARADA, "Llegada a " + stops.get(i).getNombre(),
-                            Map.of("parada", stops.get(i).getNombre(), "orden", stops.get(i).getOrden()), null,
-                            "SIMULADOR");
+                    // Tras un FIN reportado por el conductor ya no se anuncian paradas.
+                    if (tripService.permits(id, TripEventType.LLEGADA_PARADA)) {
+                        tripService.record(it, TripEventType.LLEGADA_PARADA, "Llegada a " + stops.get(i).getNombre(),
+                                Map.of("parada", stops.get(i).getNombre(), "orden", stops.get(i).getOrden()), null,
+                                "SIMULADOR");
+                    }
                     last = i;
                 }
             }
             if (!now.isBefore(it.getFechaLlegada()) && last < stops.size() - 1) {
                 RouteStop destino = stops.get(stops.size() - 1);
-                tripService.record(it, TripEventType.FIN, "El bus llegó a " + destino.getNombre(),
-                        Map.of("parada", destino.getNombre()), null, "SIMULADOR");
+                if (tripService.permits(id, TripEventType.FIN)) {
+                    tripService.record(it, TripEventType.FIN, "El bus llegó a " + destino.getNombre(),
+                            Map.of("parada", destino.getNombre()), null, "SIMULADOR");
+                }
                 last = stops.size() - 1;
             }
             if (last != it.getSimUltimaParada()) {

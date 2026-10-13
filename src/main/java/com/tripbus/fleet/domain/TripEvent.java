@@ -38,7 +38,16 @@ public class TripEvent {
     @Column(name = "ocurrido_en", nullable = false)
     private Instant ocurridoEn;
 
+    @Column(name = "idempotency_key")
+    private String idempotencyKey;
+
     protected TripEvent() {
+    }
+
+    public TripEvent(UUID itineraryId, TripEventType tipo, String descripcion, String payload, UUID userId,
+                     String origen, Instant ocurridoEn, String idempotencyKey) {
+        this(itineraryId, tipo, descripcion, payload, userId, origen, ocurridoEn);
+        this.idempotencyKey = idempotencyKey;
     }
 
     public TripEvent(UUID itineraryId, TripEventType tipo, String descripcion, String payload, UUID userId,

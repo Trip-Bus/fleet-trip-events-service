@@ -151,7 +151,8 @@ no arranca y dice cuáles faltan (`RequiredSecretsCheck`).
 
 Opcionales con valor por defecto: `SERVER_PORT` (18005), `DB_HOST` (localhost), `DB_PORT` (18105),
 `DB_NAME` (tripbus_fleet), `DB_USERNAME` (fleet), `DB_POOL_SIZE`, `REDIS_HOST` (localhost),
-`REDIS_PORT` (18100), `SIMULATOR_ENABLED` (IDE `false`, QA `true`, PROD `false`), `TELEMETRY_STREAM`.
+`REDIS_PORT` (18100), `SIMULATOR_ENABLED` (IDE `false`, QA `true`, PROD `false`), `TELEMETRY_STREAM`,
+`TELEMETRY_DLQ_STREAM` (posiciones que fallaron 5 veces; por defecto `tripbus:telemetry:dlq`).
 `DB_HOST` reemplaza a la antigua `DB_URL`.
 
 ## Swagger

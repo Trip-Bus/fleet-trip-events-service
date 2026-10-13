@@ -79,6 +79,11 @@ tripbus:
   fleet:
     telemetry-stream: ${TELEMETRY_STREAM:tripbus:telemetry}
     telemetry-group: fleet-telemetry
+    # US-038: una posición que falla queda pendiente (sin ACK) y se reintenta cuando lleva
+    # telemetry-retry-idle sin procesarse; tras telemetry-max-deliveries entregas va a la DLQ.
+    telemetry-dlq-stream: ${TELEMETRY_DLQ_STREAM:tripbus:telemetry:dlq}
+    telemetry-retry-idle: 30s
+    telemetry-max-deliveries: 5
     max-position-age: 10m
     catalog-url: ${CATALOG_URL:http://localhost:18002}
     # Simulador GPS del MVP (job separado): mueve los buses de los viajes en curso.
@@ -90,3 +95,4 @@ tripbus:
   jobs:
     simulator-interval-ms: 5000
     outbox-relay-ms: 500
+    telemetry-retry-ms: 30000

@@ -17,6 +17,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -57,14 +58,19 @@ public class FleetController {
         return tripService.tracking(id);
     }
 
-    /** US-046: reportar una novedad del viaje. */
+    /**
+     * US-046: reportar una novedad del viaje (409 INVALID_TRIP_EVENT si rompe el orden INICIO → FIN).
+     * Con Idempotency-Key, repetir la petición devuelve la misma novedad sin duplicarla.
+     */
     @PostMapping("/trips/{id}/events")
     @PreAuthorize("hasAnyRole('CONDUCTOR', 'OPERADOR', 'ADMIN')")
     public ResponseEntity<TripEventResponse> report(@PathVariable UUID id, @Valid @RequestBody TripEventRequest request,
+                                                    @RequestHeader(name = "Idempotency-Key", required = false)
+                                                    String idempotencyKey,
                                                     Authentication authentication) {
         TripEventResponse event = tripService.report(id, request.tipo(), request.descripcion(), request.detalle(),
                 CurrentUser.id(authentication), CurrentUser.hasRole(authentication, "ADMIN"),
-                CurrentUser.companyId(authentication), "USUARIO");
+                CurrentUser.companyId(authentication), "USUARIO", idempotencyKey);
         return ResponseEntity.status(HttpStatus.CREATED).body(event);
     }
 
