@@ -64,7 +64,7 @@ public class FleetController {
                                                     Authentication authentication) {
         TripEventResponse event = tripService.report(id, request.tipo(), request.descripcion(), request.detalle(),
                 CurrentUser.id(authentication), CurrentUser.hasRole(authentication, "ADMIN"),
-                CurrentUser.companyId(authentication), "USUARIO");
+                CurrentUser.hasRole(authentication, "CONDUCTOR"), CurrentUser.companyId(authentication), "USUARIO");
         return ResponseEntity.status(HttpStatus.CREATED).body(event);
     }
 

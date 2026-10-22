@@ -70,6 +70,9 @@ info:
 
 tripbus:
   internal-token: ${INTERNAL_API_TOKEN:tripbus_internal_qa_token}
+  services:
+    # US-121: validar al conductor que se asigna a un viaje (GET /internal/users/{id}).
+    identity-url: ${IDENTITY_URL:http://localhost:18001}
   events:
     enabled: ${EVENTS_ENABLED:true}
     consumer-enabled: ${EVENTS_CONSUMER_ENABLED:true}

@@ -16,6 +16,8 @@ spring:
 
 tripbus:
   internal-token: ${INTERNAL_API_TOKEN}
+  services:
+    identity-url: ${IDENTITY_URL}
   fleet:
     catalog-url: ${CATALOG_URL}
-  required-env: DB_PASSWORD,REDIS_PASSWORD,INTERNAL_API_TOKEN,IDENTITY_JWKS_URI,CATALOG_URL
+  required-env: DB_PASSWORD,REDIS_PASSWORD,INTERNAL_API_TOKEN,IDENTITY_JWKS_URI,IDENTITY_URL,CATALOG_URL

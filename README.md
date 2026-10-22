@@ -7,7 +7,7 @@ parada, retraso, desvío, fin). Incluye el **simulador GPS** del MVP.
 
 **Stack:** Java 21 · Spring Boot 3.5.16 · PostgreSQL 16 · Redis 7
 
-**HU:** US-038, US-039, US-046, US-047 · **Puerto:** 18005 · **BD:** `tripbus_fleet` (puerto QA 18105)
+**HU:** US-038, US-039, US-046, US-047, US-121, US-170 · **Puerto:** 18005 · **BD:** `tripbus_fleet` (puerto QA 18105)
 
 ## API
 
@@ -16,8 +16,29 @@ parada, retraso, desvío, fin). Incluye el **simulador GPS** del MVP.
 | POST | `/telemetry/position` | Ingesta GPS (CONDUCTOR/OPERADOR/ADMIN). Responde 202: se encola en `tripbus:telemetry` y un consumidor independiente la procesa. |
 | GET | `/buses/{id}/position` | Última posición conocida (Redis). Pública, solo si el bus tiene un viaje en ventana activa; si no, 404 `NO_ACTIVE_TRIP`. |
 | GET | `/itineraries/{id}/bus-position` | Dónde va mi bus: estado + paradas para el mapa y la posición (en `null` fuera de la ventana activa o si está cancelado). Pública. |
-| POST | `/trips/{id}/events` `{tipo, descripcion, detalle}` | Novedad del viaje (conductor/operador **de la misma empresa**, o ADMIN). |
+| POST | `/trips/{id}/events` `{tipo, descripcion, detalle}` | Novedad del viaje (operador **de la misma empresa**, o ADMIN). Un CONDUCTOR, además, debe estar **asignado** al viaje (si no, 403 `NOT_ASSIGNED`). |
 | GET | `/trips/{id}/timeline` | Línea de tiempo de novedades. Pública. |
+| PUT | `/trips/{itineraryId}/driver` `{conductorId, rol}` | US-121: asigna o reemplaza el conductor del rol (`PRINCIPAL` por defecto, o `RELEVO`). OPERADOR de la empresa del viaje o ADMIN. |
+| DELETE | `/trips/{itineraryId}/driver/{rol}` | US-121: quita la asignación (204; 404 `ASSIGNMENT_NOT_FOUND` si no hay). OPERADOR de la empresa o ADMIN. |
+| GET | `/trips/{itineraryId}/driver` | US-121: conductores asignados. OPERADOR de la empresa, ADMIN o un conductor asignado al viaje. |
+| GET | `/driver/trips?fecha=YYYY-MM-DD` | US-170 (CONDUCTOR): mis viajes del día (por defecto hoy en `America/Bogota`) ordenados por salida, con `rol`, `estado`, `ventanaInicio`/`ventanaFin` y `puedeCompartirUbicacion`. |
+| GET | `/driver/trips/active` | US-170 (CONDUCTOR): el viaje asignado que está ahora en su ventana de rastreo, o 404 `NO_ACTIVE_TRIP`. |
+
+**Asignación de conductores (US-121):** máximo un `PRINCIPAL` y un `RELEVO` por viaje (tabla
+`trip_assignments`, único `(itinerary_id, rol)`). Validaciones:
+
+- El viaje existe, es de la empresa del operador (otra empresa → 404 `TRIP_NOT_FOUND`), no está
+  cancelado (409 `TRIP_CANCELLED`) ni terminó (409 `TRIP_FINISHED`).
+- El conductor se consulta en identity (`GET /internal/users/{id}`, `X-Internal-Token`, timeouts
+  300 ms / 800 ms): debe tener rol CONDUCTOR (400 `INVALID_DRIVER`, también si no existe), estar
+  activo (400 `DRIVER_INACTIVE`) y ser de la empresa del viaje (400 `DRIVER_OTHER_COMPANY`). Si
+  identity no responde: 503 `IDENTITY_UNAVAILABLE`.
+- Sin cruces: un conductor no puede tener dos viajes cuyas ventanas de rastreo
+  (`fechaSalida - 30 min` a `fechaLlegada + 30 min`) se solapen; tampoco ser principal y relevo del
+  mismo viaje. Si chocan: 409 `DRIVER_SCHEDULE_CONFLICT` con `details.itineraryId` del viaje en
+  conflicto. Para que dos asignaciones simultáneas no se cuelen, la transacción toma
+  `pg_advisory_xact_lock` sobre el conductor antes de verificar (y bloquea la fila del viaje).
+- Si el viaje se cancela (`ItineraryCancelled`) sus asignaciones se eliminan (con `DriverUnassigned`).
 
 **Posición solo durante el viaje (US-039, US-047):** la ventana activa de un itinerario va de
 `fechaSalida - 30 min` a `fechaLlegada + 30 min` (`tripbus.fleet.tracking-window-before` / `-after`)
@@ -25,10 +46,20 @@ y nunca aplica si está cancelado. Fuera de ella la posición se guarda en `bus_
 pero no se expone ni se publica `PositionUpdated`. Estado: `CANCELADO` > `FINALIZADO` (después de
 `fechaLlegada`) > `PROGRAMADO` > `SIN_SENAL` > `EN_RUTA`.
 
-**Transactional outbox**: `PositionUpdated` y `TripEventReported` se guardan en la tabla `outbox`
-en la misma transacción y un *relay* los publica (`FOR UPDATE SKIP LOCKED`, seguro con varias réplicas).
+**Transactional outbox**: los eventos se guardan en la tabla `outbox` en la misma transacción que
+el cambio y un *relay* los publica (`FOR UPDATE SKIP LOCKED`, seguro con varias réplicas).
 
-**Consume:** `ItineraryPublished` (bus ↔ itinerario), `ItineraryCancelled`.
+**Publica:**
+
+| Evento | Cuándo | Payload |
+|---|---|---|
+| `PositionUpdated` | Posición GPS de un viaje en ventana activa | `{busId, itineraryId, lat, lng, velocidad, rumbo, timestamp}` |
+| `TripEventReported` | Novedad del viaje | `{tripEventId, itineraryId, busId, tipo, descripcion, payload, timestamp}` |
+| `DriverAssigned` | US-121: se asigna un conductor (también al reemplazar) | `{itineraryId, companyId, conductorId, rol}` |
+| `DriverUnassigned` | US-121: se quita, se reemplaza o se cancela el viaje | `{itineraryId, companyId, conductorId, rol}` |
+
+**Consume:** `ItineraryPublished` (bus ↔ itinerario), `ItineraryCancelled` (marca el viaje y quita
+sus conductores).
 
 ## Simulador GPS
 
@@ -92,7 +123,8 @@ Puertos de este repo (el contenedor escucha en el mismo puerto que publica):
 | PostgreSQL `tripbus_fleet` / usuario `fleet` | 18105 | 5432 | nunca se publica |
 | Redis (compartido, con contraseña) | 18100 | 6379 | nunca se publica |
 
-Otros servicios que usa: identity (JWKS, `IDENTITY_JWKS_URI`, por defecto `http://localhost:18001/.well-known/jwks.json`)
+Otros servicios que usa: identity (JWKS, `IDENTITY_JWKS_URI`, por defecto `http://localhost:18001/.well-known/jwks.json`;
+y `GET /internal/users/{id}` para validar conductores, `IDENTITY_URL`, por defecto `http://localhost:18001`)
 y catalog (paradas de la ruta, `CATALOG_URL`, por defecto `http://localhost:18002`). En `qa`/`prod` no
 tienen valor por defecto y son obligatorias.
 
@@ -147,6 +179,7 @@ no arranca y dice cuáles faltan (`RequiredSecretsCheck`).
 | `REDIS_PASSWORD` | ✔ | (vacía) |
 | `INTERNAL_API_TOKEN` | ✔ | `tripbus_internal_qa_token` |
 | `IDENTITY_JWKS_URI` | ✔ | `http://localhost:18001/.well-known/jwks.json` |
+| `IDENTITY_URL` | ✔ | `http://localhost:18001` |
 | `CATALOG_URL` | ✔ | `http://localhost:18002` |
 
 Opcionales con valor por defecto: `SERVER_PORT` (18005), `DB_HOST` (localhost), `DB_PORT` (18105),
@@ -181,11 +214,14 @@ mvn -B verify      # unitarias + integración con PostgreSQL y Redis reales (Tes
 ```
 
 - `*Test` / `*Tests`: unitarias (simulador GPS, `RequiredSecretsCheck`, `RequestIdFilter`,
-  `RequestIdPropagationInterceptor`).
+  `RequestIdPropagationInterceptor`, `IdentityClient` con `MockRestServiceServer`, cálculo de estado).
 - `FleetIT`: levanta PostgreSQL 16 y Redis 7 con Testcontainers, corre las migraciones Flyway reales y
   prueba la ingesta asíncrona de posiciones (stream de telemetría, idempotencia), el transactional
   outbox hacia el bus de eventos y las novedades del viaje por empresa. Ya no necesita `TRIPBUS_IT`
   ni servicios levantados a mano.
+- `DriverIT`: asignación de conductores y mis viajes de hoy con PostgreSQL y Redis reales e identity
+  simulado con WireMock (validaciones, cruces, cancelación, eventos, y 20 hilos asignando al mismo
+  conductor en viajes cruzados: solo queda 1).
 
 Toda la plataforma: ver el README de **API-gateway**.
 
@@ -203,16 +239,15 @@ Toda la plataforma: ver el README de **API-gateway**.
 `mvn verify` falla si la cobertura total baja de los mínimos del `pom.xml`, en **todas** las ramas
 (también en `main`, donde Sonar no corre):
 
-| Métrica | Medido (2026-10-09) | Mínimo |
+| Métrica | Medido (2026-10-22) | Mínimo |
 |---|---|---|
-| Líneas | 60 % | `jacoco.minimo.lineas` = 0.60 |
-| Ramas | 44 % | `jacoco.minimo.ramas` = 0.40 |
+| Líneas | 76,6 % | `jacoco.minimo.lineas` = 0.75 |
+| Ramas | 67,5 % | `jacoco.minimo.ramas` = 0.65 |
 
 **La cobertura nunca puede bajar: si agregas pruebas, sube el mínimo.** Corre `mvn verify`, mira
 el total en `target/site/jacoco/index.html` (o la tabla del CI), redondéalo hacia abajo al 5 % y
-actualiza la propiedad en el pom en el mismo PR. Ramas está por debajo del 60 % de referencia:
-las mejores candidatas para subirla son `EventConsumer`, `GpsSimulator` (el `tick`/`step` con viajes
-en curso), `TelemetryConsumer` y `CurrentUser`.
+actualiza la propiedad en el pom en el mismo PR. Las mejores candidatas para subir ramas son
+`EventConsumer`, `GpsSimulator` (el `tick`/`step` con viajes en curso), `TelemetryConsumer` y `CurrentUser`.
 
 Fuera de la cobertura (mismas en `sonar.coverage.exclusions` y en los `<excludes>` de JaCoCo) solo
 está lo que no tiene lógica: `FleetApplication`, los records sin métodos de `web/dto`, las entidades

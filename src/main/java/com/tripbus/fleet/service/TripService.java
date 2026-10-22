@@ -8,6 +8,7 @@ import com.tripbus.fleet.domain.TripEvent;
 import com.tripbus.fleet.domain.TripEventType;
 import com.tripbus.fleet.events.FleetEvents;
 import com.tripbus.fleet.repository.FleetItineraryRepository;
+import com.tripbus.fleet.repository.TripAssignmentRepository;
 import com.tripbus.fleet.repository.TripEventRepository;
 import com.tripbus.fleet.web.dto.ItineraryTracking;
 import com.tripbus.fleet.web.dto.PositionResponse;
@@ -30,6 +31,7 @@ public class TripService {
 
     private final FleetItineraryRepository itineraryRepository;
     private final TripEventRepository eventRepository;
+    private final TripAssignmentRepository assignmentRepository;
     private final RouteStopsCache stopsCache;
     private final TelemetryService telemetryService;
     private final TrackingWindow trackingWindow;
@@ -38,10 +40,12 @@ public class TripService {
     private final Clock clock;
 
     public TripService(FleetItineraryRepository itineraryRepository, TripEventRepository eventRepository,
-                       RouteStopsCache stopsCache, TelemetryService telemetryService, TrackingWindow trackingWindow,
+                       TripAssignmentRepository assignmentRepository, RouteStopsCache stopsCache,
+                       TelemetryService telemetryService, TrackingWindow trackingWindow,
                        Outbox outbox, ObjectMapper objectMapper, Clock clock) {
         this.itineraryRepository = itineraryRepository;
         this.eventRepository = eventRepository;
+        this.assignmentRepository = assignmentRepository;
         this.stopsCache = stopsCache;
         this.telemetryService = telemetryService;
         this.trackingWindow = trackingWindow;
@@ -52,16 +56,20 @@ public class TripService {
 
     /**
      * US-046: reportar una novedad. Un conductor/operador solo puede reportar sobre viajes
-     * de su propia empresa (US-005). El evento va al outbox en la misma transacción.
+     * de su propia empresa (US-005) y un conductor, además, solo de viajes donde está asignado
+     * (US-121). El evento va al outbox en la misma transacción.
      */
     @Transactional
     public TripEventResponse report(UUID itineraryId, TripEventType tipo, String descripcion,
-                                    Map<String, Object> detalle, UUID userId, boolean isAdmin, UUID companyId,
-                                    String origen) {
+                                    Map<String, Object> detalle, UUID userId, boolean isAdmin, boolean isConductor,
+                                    UUID companyId, String origen) {
         FleetItinerary itinerary = itineraryRepository.findById(itineraryId)
                 .orElseThrow(() -> ApiException.notFound("TRIP_NOT_FOUND", "El viaje no existe"));
         if (!isAdmin && userId != null && !Objects.equals(companyId, itinerary.getCompanyId())) {
             throw ApiException.forbidden("NOT_YOUR_COMPANY", "Solo puede reportar novedades de viajes de su empresa");
+        }
+        if (isConductor && !assignmentRepository.estaAsignado(itineraryId, userId)) {
+            throw DriverAssignmentService.notAssigned();
         }
         return record(itinerary, tipo, descripcion, detalle, userId, origen);
     }
@@ -97,30 +105,41 @@ public class TripService {
         FleetItinerary itinerary = itineraryRepository.findById(itineraryId)
                 .orElseThrow(() -> ApiException.notFound("TRIP_NOT_FOUND", "El viaje no existe"));
         Instant now = clock.instant();
-        // US-039/US-047: la posición solo se muestra durante la ventana activa del viaje.
-        PositionResponse position = trackingWindow.isActive(itinerary, now)
-                ? telemetryService.lastByItinerary(itineraryId)
-                        .filter(p -> !p.timestamp().isBefore(trackingWindow.start(itinerary)))
-                        .orElse(null)
-                : null;
-        String estado;
-        if (itinerary.isCancelado()) {
-            estado = "CANCELADO";
-        } else if (now.isAfter(itinerary.getFechaLlegada())) {
-            estado = "FINALIZADO";
-        } else if (now.isBefore(itinerary.getFechaSalida())) {
-            estado = "PROGRAMADO";
-        } else if (position == null || Duration.between(position.timestamp(), now).toMinutes() > 5) {
-            estado = "SIN_SENAL";
-        } else {
-            estado = "EN_RUTA";
-        }
+        PositionResponse position = visiblePosition(itinerary, now);
+        String estado = estado(itinerary, position, now);
         List<StopView> paradas = stopsCache.stops(itinerary.getRouteId()).stream()
                 .map(s -> new StopView(s.getOrden(), s.getNombre(), s.getLat(), s.getLng(),
                         itinerary.getFechaSalida().plusSeconds(s.getMinutosDesdeSalida() * 60L)))
                 .toList();
         return new ItineraryTracking(itineraryId, itinerary.getBusId(), itinerary.getOrigen(), itinerary.getDestino(),
                 itinerary.getFechaSalida(), itinerary.getFechaLlegada(), estado, position, paradas);
+    }
+
+    /** Estado del viaje en ese instante (el mismo de bus-position): lo usa también US-170. */
+    public String estado(FleetItinerary itinerary, Instant now) {
+        return estado(itinerary, visiblePosition(itinerary, now), now);
+    }
+
+    /** US-039/US-047: la posición solo se muestra durante la ventana activa del viaje. */
+    private PositionResponse visiblePosition(FleetItinerary itinerary, Instant now) {
+        return trackingWindow.isActive(itinerary, now)
+                ? telemetryService.lastByItinerary(itinerary.getItineraryId())
+                        .filter(p -> !p.timestamp().isBefore(trackingWindow.start(itinerary)))
+                        .orElse(null)
+                : null;
+    }
+
+    static String estado(FleetItinerary itinerary, PositionResponse position, Instant now) {
+        if (itinerary.isCancelado()) {
+            return "CANCELADO";
+        } else if (now.isAfter(itinerary.getFechaLlegada())) {
+            return "FINALIZADO";
+        } else if (now.isBefore(itinerary.getFechaSalida())) {
+            return "PROGRAMADO";
+        } else if (position == null || Duration.between(position.timestamp(), now).toMinutes() > 5) {
+            return "SIN_SENAL";
+        }
+        return "EN_RUTA";
     }
 
     /** Última posición del bus, solo si está haciendo un viaje (itinerario en ventana activa). */
