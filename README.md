@@ -283,8 +283,8 @@ Toda la plataforma: ver el README de **API-gateway**.
 
 | Métrica | Medido (2026-10-22) | Mínimo |
 |---|---|---|
-| Líneas | 80,1 % | `jacoco.minimo.lineas` = 0.80 |
-| Ramas | 72,1 % | `jacoco.minimo.ramas` = 0.70 |
+| Líneas | 83,7 % | `jacoco.minimo.lineas` = 0.80 |
+| Ramas | 77,9 % | `jacoco.minimo.ramas` = 0.70 |
 
 **La cobertura nunca puede bajar: si agregas pruebas, sube el mínimo.** Corre `mvn verify`, mira
 el total en `target/site/jacoco/index.html` (o la tabla del CI), redondéalo hacia abajo al 5 % y

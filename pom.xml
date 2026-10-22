@@ -35,7 +35,7 @@
 
         <!-- Mínimos de cobertura total que exige jacoco:check (ver jacoco-maven-plugin).
              La cobertura nunca puede bajar: si agregas pruebas, sube el mínimo.
-             Medición del 2026-10-22 (US-173 a US-175): líneas 80,1 %, ramas 72,1 %. Mínimos: líneas 0.80;
+             Medición del 2026-10-22 (US-173 a US-175, en CI): líneas 83,7 %, ramas 77,9 %. Mínimos: líneas 0.80;
              ramas 0.70. -->
         <jacoco.minimo.lineas>0.80</jacoco.minimo.lineas>
         <jacoco.minimo.ramas>0.70</jacoco.minimo.ramas>
