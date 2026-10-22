@@ -1,13 +1,16 @@
 package com.tripbus.fleet.repository;
 
 import com.tripbus.fleet.domain.FleetItinerary;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 public interface FleetItineraryRepository extends JpaRepository<FleetItinerary, UUID> {
@@ -19,6 +22,11 @@ public interface FleetItineraryRepository extends JpaRepository<FleetItinerary, 
             order by f.fechaSalida
             """)
     List<FleetItinerary> findEnCurso(@Param("now") Instant now, @Param("desde") Instant desde, Pageable pageable);
+
+    /** US-121: bloquea la fila del viaje (dos asignaciones del mismo viaje se hacen una tras otra). */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select f from FleetItinerary f where f.itineraryId = :id")
+    Optional<FleetItinerary> findByIdForUpdate(@Param("id") UUID id);
 
     /** ¿La empresa opera algún viaje con este bus? (autorización de la telemetría, US-038). */
     boolean existsByBusIdAndCompanyId(UUID busId, UUID companyId);

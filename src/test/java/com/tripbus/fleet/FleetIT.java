@@ -33,8 +33,7 @@ import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
+import org.springframework.test.annotation.DirtiesContext;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -66,16 +65,22 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @ActiveProfiles("it")
 @TestPropertySource(properties = "TELEMETRY_STREAM=tripbus:telemetry:test")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-@Testcontainers
+@DirtiesContext
 class FleetIT {
 
-    @Container
     @ServiceConnection
     static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
 
-    @Container
     @ServiceConnection(name = "redis")
     static GenericContainer<?> redisContainer = new GenericContainer<>("redis:7-alpine").withExposedPorts(6379);
+
+    // Arrancados aquí (sin @Container) para que sigan vivos mientras @DirtiesContext cierra el contexto
+    // al terminar la clase; si no, el relay programado del outbox espera una conexión y el cierre de la
+    // JVM tarda 30 s. Ryuk los borra al final.
+    static {
+        postgres.start();
+        redisContainer.start();
+    }
 
     @Autowired
     private MockMvc mvc;
@@ -174,7 +179,11 @@ class FleetIT {
     }
 
     private RequestPostProcessor conductor(UUID company) {
-        return jwt().jwt(j -> j.subject(UUID.randomUUID().toString()).claim("role", "CONDUCTOR")
+        return conductor(UUID.randomUUID(), company);
+    }
+
+    private RequestPostProcessor conductor(UUID id, UUID company) {
+        return jwt().jwt(j -> j.subject(id.toString()).claim("role", "CONDUCTOR")
                         .claim("companyId", company.toString()))
                 .authorities(new SimpleGrantedAuthority("ROLE_CONDUCTOR"));
     }
@@ -294,9 +303,20 @@ class FleetIT {
         mvc.perform(post("/trips/{id}/events", itineraryId).with(conductor(UUID.randomUUID()))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"tipo\":\"RETRASO\",\"descripcion\":\"Derrumbe en la vía\"}"))
-                .andExpect(status().isForbidden());
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("NOT_YOUR_COMPANY"));
 
+        // De su empresa pero sin estar asignado al viaje (US-121).
         mvc.perform(post("/trips/{id}/events", itineraryId).with(conductor(companyId))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tipo\":\"RETRASO\",\"descripcion\":\"Derrumbe en la vía\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("NOT_ASSIGNED"));
+
+        UUID conductorId = UUID.randomUUID();
+        jdbc.update("insert into trip_assignments (id, itinerary_id, conductor_id, rol, asignado_por, asignado_en) "
+                + "values (?, ?, ?, 'PRINCIPAL', ?, now())", UUID.randomUUID(), itineraryId, conductorId, UUID.randomUUID());
+        mvc.perform(post("/trips/{id}/events", itineraryId).with(conductor(conductorId, companyId))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"tipo\":\"RETRASO\",\"descripcion\":\"Derrumbe en la vía\",\"detalle\":{\"minutos\":40}}"))
                 .andExpect(status().isCreated())

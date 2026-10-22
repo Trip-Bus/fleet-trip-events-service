@@ -5,6 +5,7 @@ import com.tripbus.fleet.domain.FleetItinerary;
 import com.tripbus.fleet.repository.FleetItineraryRepository;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
@@ -23,6 +24,14 @@ public class TrackingWindow {
     public TrackingWindow(FleetItineraryRepository itineraryRepository, FleetProperties properties) {
         this.itineraryRepository = itineraryRepository;
         this.properties = properties;
+    }
+
+    public Duration before() {
+        return properties.trackingWindowBefore();
+    }
+
+    public Duration after() {
+        return properties.trackingWindowAfter();
     }
 
     public Instant start(FleetItinerary itinerary) {
