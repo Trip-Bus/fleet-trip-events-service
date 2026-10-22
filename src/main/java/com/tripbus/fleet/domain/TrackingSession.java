@@ -40,14 +40,8 @@ public class TrackingSession {
     @Column(name = "ultima_lng")
     private Double ultimaLng;
 
+    /** Solo JPA: las sesiones se crean con TrackingSessionRepository.crearSiNoExiste (ON CONFLICT). */
     protected TrackingSession() {
-    }
-
-    public TrackingSession(UUID itineraryId, UUID conductorId, TrackingStatus estado, Instant now) {
-        this.itineraryId = itineraryId;
-        this.conductorId = conductorId;
-        this.estado = estado;
-        this.actualizadoEn = now;
     }
 
     /** Cambia el estado. Devuelve true si de verdad cambió (para publicar TrackingStatusChanged). */
