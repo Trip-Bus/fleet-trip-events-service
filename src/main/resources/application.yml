@@ -90,6 +90,12 @@ tripbus:
     # (de fechaSalida - before a fechaLlegada + after; nunca si el viaje está cancelado).
     tracking-window-before: 30m
     tracking-window-after: 30m
+    # US-173: lecturas del celular con precisión peor que esto (metros) se descartan.
+    max-accuracy-m: 100
+    # US-174: una sesión ACTIVO sin posiciones por más de esto pasa a SIN_SENAL.
+    signal-timeout: 60s
   jobs:
     simulator-interval-ms: 5000
+    # US-174/US-175: job de estados de rastreo (SIN_SENAL, FINALIZADO), en un solo nodo.
+    tracking-status-ms: 15000
     outbox-relay-ms: 500

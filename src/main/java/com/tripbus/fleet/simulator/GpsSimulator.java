@@ -1,10 +1,12 @@
 package com.tripbus.fleet.simulator;
 
+import com.tripbus.fleet.common.geo.Geo;
 import com.tripbus.fleet.common.redis.LeaderLock;
 import com.tripbus.fleet.domain.FleetItinerary;
 import com.tripbus.fleet.domain.RouteStop;
 import com.tripbus.fleet.domain.TripEventType;
 import com.tripbus.fleet.repository.FleetItineraryRepository;
+import com.tripbus.fleet.service.DriverTrackingService;
 import com.tripbus.fleet.service.RouteStopsCache;
 import com.tripbus.fleet.service.TelemetryService;
 import com.tripbus.fleet.service.TripService;
@@ -40,17 +42,20 @@ public class GpsSimulator {
     private final RouteStopsCache stopsCache;
     private final TelemetryService telemetryService;
     private final TripService tripService;
+    private final DriverTrackingService trackingService;
     private final LeaderLock leaderLock;
     private final TransactionTemplate tx;
     private final Clock clock;
 
     public GpsSimulator(FleetItineraryRepository itineraryRepository, RouteStopsCache stopsCache,
-                        TelemetryService telemetryService, TripService tripService, LeaderLock leaderLock,
+                        TelemetryService telemetryService, TripService tripService,
+                        DriverTrackingService trackingService, LeaderLock leaderLock,
                         TransactionTemplate tx, Clock clock) {
         this.itineraryRepository = itineraryRepository;
         this.stopsCache = stopsCache;
         this.telemetryService = telemetryService;
         this.tripService = tripService;
+        this.trackingService = trackingService;
         this.leaderLock = leaderLock;
         this.tx = tx;
         this.clock = clock;
@@ -86,6 +91,8 @@ public class GpsSimulator {
             Point p = interpolate(stops, elapsedMin);
             telemetryService.ingest(new PositionRequest(itinerary.getBusId(), itinerary.getItineraryId(), p.lat(),
                     p.lng(), p.speed(), p.bearing(), now));
+            // US-174: en QA el mapa muestra el estado de rastreo igual que con un conductor real.
+            trackingService.markSimulated(itinerary.getItineraryId(), now, p.lat(), p.lng());
         }
 
         tx.executeWithoutResult(s -> {
@@ -141,12 +148,7 @@ public class GpsSimulator {
     }
 
     static double haversineKm(double lat1, double lon1, double lat2, double lon2) {
-        double r = 6371;
-        double dLat = Math.toRadians(lat2 - lat1);
-        double dLon = Math.toRadians(lon2 - lon1);
-        double h = Math.sin(dLat / 2) * Math.sin(dLat / 2)
-                + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-        return 2 * r * Math.asin(Math.sqrt(h));
+        return Geo.haversineKm(lat1, lon1, lat2, lon2);
     }
 
     static double bearing(double lat1, double lon1, double lat2, double lon2) {

@@ -63,28 +63,18 @@ public class TelemetryService {
     }
 
     /**
-     * US-038/US-005: quien publica la posición debe operar el bus. Fuera de ADMIN, el bus (y el
-     * itinerario, si se envía) debe ser de la empresa del token. Solo la llama el controlador:
-     * el simulador GPS usa {@link #ingest} directamente, sin usuario.
+     * POST /telemetry/position (solo ADMIN, pruebas manuales): si trae itinerario, debe existir y
+     * ser de ese bus. Los conductores usan /driver/location (US-173) y el simulador GPS usa
+     * {@link #ingest} directamente.
      */
-    public void autorizar(PositionRequest request, UUID companyId, boolean esAdmin) {
+    public void validarItinerario(PositionRequest request) {
         if (request.itineraryId() != null) {
             FleetItinerary itinerary = itineraryRepository.findById(request.itineraryId())
                     .orElseThrow(() -> ApiException.notFound("ITINERARY_NOT_FOUND", "Itinerario no encontrado"));
             if (!itinerary.getBusId().equals(request.busId())) {
                 throw ApiException.badRequest("BUS_ITINERARY_MISMATCH", "El bus no corresponde al itinerario");
             }
-            if (!esAdmin && (companyId == null || !companyId.equals(itinerary.getCompanyId()))) {
-                throw notYourCompany();
-            }
-        } else if (!esAdmin && (companyId == null
-                || !itineraryRepository.existsByBusIdAndCompanyId(request.busId(), companyId))) {
-            throw notYourCompany();
         }
-    }
-
-    private static ApiException notYourCompany() {
-        return ApiException.forbidden("NOT_YOUR_COMPANY", "Solo puede enviar posiciones de buses de su empresa");
     }
 
     /** Valida y encola. Devuelve el eventId asignado a la posición. */
@@ -101,12 +91,26 @@ public class TelemetryService {
         if (request.lat() == 0.0 && request.lng() == 0.0) {
             throw ApiException.badRequest("INVALID_COORDINATES", "Coordenadas (0,0) inválidas");
         }
+        return enqueue(request, timestamp, null, null);
+    }
+
+    /**
+     * Encola en el stream de telemetría una posición ya validada (US-173: la del conductor llega
+     * con sus propios filtros). conductorId y precision solo se guardan en bus_positions.
+     */
+    public String enqueue(PositionRequest request, Instant timestamp, UUID conductorId, Double precision) {
         String eventId = UUID.randomUUID().toString();
         Map<String, String> fields = new LinkedHashMap<>();
         fields.put("eventId", eventId);
         fields.put("busId", request.busId().toString());
         if (request.itineraryId() != null) {
             fields.put("itineraryId", request.itineraryId().toString());
+        }
+        if (conductorId != null) {
+            fields.put("conductorId", conductorId.toString());
+        }
+        if (precision != null) {
+            fields.put("precision", String.valueOf(precision));
         }
         fields.put("lat", String.valueOf(request.lat()));
         fields.put("lng", String.valueOf(request.lng()));
@@ -140,7 +144,8 @@ public class TelemetryService {
         BusPosition position = positionRepository.save(new BusPosition(eventId, busId, itineraryId,
                 Double.parseDouble(fields.get("lat")), Double.parseDouble(fields.get("lng")),
                 parse(fields.get("velocidad")), parse(fields.get("rumbo")), Instant.parse(fields.get("timestamp")),
-                clock.instant()));
+                clock.instant(), fields.containsKey("conductorId") ? UUID.fromString(fields.get("conductorId")) : null,
+                parse(fields.get("precision"))));
 
         PositionResponse view = toView(position);
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {

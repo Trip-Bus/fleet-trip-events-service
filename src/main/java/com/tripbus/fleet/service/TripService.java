@@ -8,6 +8,8 @@ import com.tripbus.fleet.domain.TripEvent;
 import com.tripbus.fleet.domain.TripEventType;
 import com.tripbus.fleet.events.FleetEvents;
 import com.tripbus.fleet.repository.FleetItineraryRepository;
+import com.tripbus.fleet.domain.TrackingSession;
+import com.tripbus.fleet.repository.TrackingSessionRepository;
 import com.tripbus.fleet.repository.TripAssignmentRepository;
 import com.tripbus.fleet.repository.TripEventRepository;
 import com.tripbus.fleet.web.dto.ItineraryTracking;
@@ -32,6 +34,7 @@ public class TripService {
     private final FleetItineraryRepository itineraryRepository;
     private final TripEventRepository eventRepository;
     private final TripAssignmentRepository assignmentRepository;
+    private final TrackingSessionRepository sessionRepository;
     private final RouteStopsCache stopsCache;
     private final TelemetryService telemetryService;
     private final TrackingWindow trackingWindow;
@@ -40,12 +43,14 @@ public class TripService {
     private final Clock clock;
 
     public TripService(FleetItineraryRepository itineraryRepository, TripEventRepository eventRepository,
-                       TripAssignmentRepository assignmentRepository, RouteStopsCache stopsCache,
+                       TripAssignmentRepository assignmentRepository, TrackingSessionRepository sessionRepository,
+                       RouteStopsCache stopsCache,
                        TelemetryService telemetryService, TrackingWindow trackingWindow,
                        Outbox outbox, ObjectMapper objectMapper, Clock clock) {
         this.itineraryRepository = itineraryRepository;
         this.eventRepository = eventRepository;
         this.assignmentRepository = assignmentRepository;
+        this.sessionRepository = sessionRepository;
         this.stopsCache = stopsCache;
         this.telemetryService = telemetryService;
         this.trackingWindow = trackingWindow;
@@ -111,8 +116,12 @@ public class TripService {
                 .map(s -> new StopView(s.getOrden(), s.getNombre(), s.getLat(), s.getLng(),
                         itinerary.getFechaSalida().plusSeconds(s.getMinutosDesdeSalida() * 60L)))
                 .toList();
+        // US-174: estado de la sesión de rastreo (null si nunca se encendió).
+        TrackingSession session = sessionRepository.findById(itineraryId).orElse(null);
         return new ItineraryTracking(itineraryId, itinerary.getBusId(), itinerary.getOrigen(), itinerary.getDestino(),
-                itinerary.getFechaSalida(), itinerary.getFechaLlegada(), estado, position, paradas);
+                itinerary.getFechaSalida(), itinerary.getFechaLlegada(), estado, position, paradas,
+                session != null ? session.getEstado().name() : null,
+                session != null ? session.getUltimaPosicionEn() : null);
     }
 
     /** Estado del viaje en ese instante (el mismo de bus-position): lo usa también US-170. */

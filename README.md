@@ -7,15 +7,19 @@ parada, retraso, desvío, fin). Incluye el **simulador GPS** del MVP.
 
 **Stack:** Java 21 · Spring Boot 3.5.16 · PostgreSQL 16 · Redis 7
 
-**HU:** US-038, US-039, US-046, US-047, US-121, US-170 · **Puerto:** 18005 · **BD:** `tripbus_fleet` (puerto QA 18105)
+**HU:** US-038, US-039, US-046, US-047, US-121, US-170, US-173, US-174, US-175 · **Puerto:** 18005 · **BD:** `tripbus_fleet` (puerto QA 18105)
 
 ## API
 
 | Método | Endpoint | Descripción |
 |---|---|---|
-| POST | `/telemetry/position` | Ingesta GPS (CONDUCTOR/OPERADOR/ADMIN). Responde 202: se encola en `tripbus:telemetry` y un consumidor independiente la procesa. |
-| GET | `/buses/{id}/position` | Última posición conocida (Redis). Pública, solo si el bus tiene un viaje en ventana activa; si no, 404 `NO_ACTIVE_TRIP`. |
-| GET | `/itineraries/{id}/bus-position` | Dónde va mi bus: estado + paradas para el mapa y la posición (en `null` fuera de la ventana activa o si está cancelado). Pública. |
+| POST | `/driver/tracking/start` | US-173 (CONDUCTOR): enciende el rastreo de su viaje activo (`ACTIVO`). Responde `{itineraryId, busId, estado, ultimaPosicionEn}`. |
+| POST | `/driver/tracking/stop` | US-173 (CONDUCTOR): pone el rastreo en pausa (`EN_PAUSA`). |
+| POST | `/driver/location` `{lat, lng, precision, velocidad, rumbo, timestamp}` | US-173 (CONDUCTOR): ubicación del celular, **sin** `busId` ni `itineraryId` (fleet los resuelve con la asignación activa). 202 `{aceptada, eventId}` o `{aceptada: false, motivo}`. |
+| POST | `/driver/location/batch` `[hasta 50 lecturas]` | US-173 (CONDUCTOR): lo que el celular guardó sin conexión, procesado en orden de timestamp. 202 `{aceptadas, descartadas, lecturas[]}`. |
+| POST | `/telemetry/position` | Ingesta GPS manual, **solo ADMIN** (pruebas). Responde 202: se encola en `tripbus:telemetry` y un consumidor independiente la procesa. |
+| GET | `/buses/{id}/position` | **Deprecado (se retira en el Sprint 5):** usar `/itineraries/{id}/bus-position`. Última posición conocida (Redis). Pública, solo si el bus tiene un viaje en ventana activa; si no, 404 `NO_ACTIVE_TRIP`. |
+| GET | `/itineraries/{id}/bus-position` | Dónde va mi bus: estado + paradas para el mapa y la posición (en `null` fuera de la ventana activa o si está cancelado), más `estadoRastreo` y `ultimaPosicionEn` (US-174; `null` si nunca se encendió). Pública. |
 | POST | `/trips/{id}/events` `{tipo, descripcion, detalle}` | Novedad del viaje (operador **de la misma empresa**, o ADMIN). Un CONDUCTOR, además, debe estar **asignado** al viaje (si no, 403 `NOT_ASSIGNED`). |
 | GET | `/trips/{id}/timeline` | Línea de tiempo de novedades. Pública. |
 | PUT | `/trips/{itineraryId}/driver` `{conductorId, rol}` | US-121: asigna o reemplaza el conductor del rol (`PRINCIPAL` por defecto, o `RELEVO`). OPERADOR de la empresa del viaje o ADMIN. |
@@ -46,6 +50,38 @@ y nunca aplica si está cancelado. Fuera de ella la posición se guarda en `bus_
 pero no se expone ni se publica `PositionUpdated`. Estado: `CANCELADO` > `FINALIZADO` (después de
 `fechaLlegada`) > `PROGRAMADO` > `SIN_SENAL` > `EN_RUTA`.
 
+### Rastreo con el celular del conductor (US-173 a US-175)
+
+El bus se rastrea con la ubicación del celular del conductor asignado (US-121):
+
+1. **Solo dentro de la ventana del viaje asignado (US-175).** `start`, `stop`, `location` y `batch`
+   buscan el viaje asignado al conductor, no cancelado, cuya ventana de rastreo contiene este
+   instante. Sin viaje asignado → 409 `NO_ACTIVE_TRIP`; con un viaje asignado a menos de 24 h pero
+   fuera de su ventana → 409 `OUTSIDE_TRACKING_WINDOW`. Con la sesión en pausa, sin encender o
+   finalizada → 409 `TRACKING_NOT_ACTIVE` y no se guarda nada.
+2. **Filtros por lectura (US-173).** Una lectura mala se descarta y se responde 202 con
+   `aceptada: false` y el `motivo`, sin romper el envío: `PRECISION_BAJA` (precisión mayor que
+   `tripbus.fleet.max-accuracy-m`, 100 m), `TIMESTAMP_FUTURO` (más de 30 s en el futuro),
+   `POSICION_ANTIGUA` (más de 10 min), `FUERA_DE_VENTANA` (antes de que empezara la ventana),
+   `COORDENADAS_INVALIDAS` (0,0), `POSICION_DESORDENADA` (no es posterior a la última aceptada) y
+   `SALTO_IMPOSIBLE` (velocidad implícita respecto a la última posición mayor a 150 km/h).
+3. **Misma ingesta asíncrona.** Las aceptadas van al stream `tripbus:telemetry` con el `busId` y el
+   `itineraryId` del viaje. `bus_positions` guarda además `conductor_id` y `precision`
+   (`conductor_id` es `NULL` para el simulador y los datos anteriores). `conductorId` **nunca** va en
+   `PositionUpdated` (es un tópico público).
+4. **Estados (US-174)**, tabla `tracking_sessions` (una por viaje):
+
+| Estado | Cuándo |
+|---|---|
+| `ACTIVO` | El conductor encendió el rastreo (`start`), o llegó una posición estando en `SIN_SENAL`. |
+| `EN_PAUSA` | El conductor apagó el botón (`stop`). |
+| `SIN_SENAL` | Estaba `ACTIVO` y no llegan posiciones hace más de `tripbus.fleet.signal-timeout` (60 s). |
+| `FINALIZADO` | Terminó la ventana del viaje o se canceló. Desde ahí no se acepta nada más de ese viaje. |
+
+El job `TrackingStatusJob` corre cada 15 s (`tripbus.jobs.tracking-status-ms`) en un solo nodo
+(`LeaderLock`) y hace los pasos a `SIN_SENAL` y `FINALIZADO`. Cada cambio de estado publica
+`TrackingStatusChanged` por el outbox en la misma transacción.
+
 **Transactional outbox**: los eventos se guardan en la tabla `outbox` en la misma transacción que
 el cambio y un *relay* los publica (`FOR UPDATE SKIP LOCKED`, seguro con varias réplicas).
 
@@ -53,7 +89,8 @@ el cambio y un *relay* los publica (`FOR UPDATE SKIP LOCKED`, seguro con varias 
 
 | Evento | Cuándo | Payload |
 |---|---|---|
-| `PositionUpdated` | Posición GPS de un viaje en ventana activa | `{busId, itineraryId, lat, lng, velocidad, rumbo, timestamp}` |
+| `PositionUpdated` | Posición GPS de un viaje en ventana activa (sin `conductorId`: es público) | `{busId, itineraryId, lat, lng, velocidad, rumbo, timestamp}` |
+| `TrackingStatusChanged` | US-174: cambia el estado de rastreo del viaje | `{itineraryId, busId, companyId, estado, ultimaPosicionEn}` |
 | `TripEventReported` | Novedad del viaje | `{tripEventId, itineraryId, busId, tipo, descripcion, payload, timestamp}` |
 | `DriverAssigned` | US-121: se asigna un conductor (también al reemplazar) | `{itineraryId, companyId, conductorId, rol}` |
 | `DriverUnassigned` | US-121: se quita, se reemplaza o se cancela el viaje | `{itineraryId, companyId, conductorId, rol}` |
@@ -64,8 +101,10 @@ sus conductores).
 ## Simulador GPS
 
 Con `SIMULATOR_ENABLED=true` mueve cada 5 s los buses de los viajes en curso siguiendo las
-paradas de su ruta y genera las novedades INICIO / LLEGADA_PARADA / FIN. Usa la misma ruta de
-ingesta que un GPS real y corre en un solo nodo (LeaderLock en Redis). En Kubernetes es un
+paradas de su ruta y genera las novedades INICIO / LLEGADA_PARADA / FIN. Usa la misma ingesta
+asíncrona que el celular del conductor, marca sus viajes como `ACTIVO` en `tracking_sessions` (así
+en QA el mapa muestra el estado de rastreo igual que con un conductor real) y corre en un solo nodo
+(LeaderLock en Redis). En Kubernetes es un
 Deployment aparte (`fleet-gps-simulator`).
 
 | Entorno | Simulador por defecto | Por qué |
@@ -140,7 +179,7 @@ curl http://localhost:18005/actuator/info           # build + app.commit=qa-loca
 Con este compose solo responden las consultas públicas (`/buses/{id}/position`,
 `/itineraries/{id}/bus-position`, `/trips/{id}/timeline`), pero sin catalog no llegan viajes
 (`ItineraryPublished`): lo esperado es 404 o una lista vacía, y el simulador no tiene nada que mover.
-`POST /telemetry/position` y `POST /trips/{id}/events` exigen un JWT de identity: pruébalos con el
+`/driver/**`, `POST /telemetry/position` y `POST /trips/{id}/events` exigen un JWT de identity: pruébalos con el
 compose general de **API-gateway**. El servicio llega a identity (18001) y catalog (18002) de tu PC
 por `host.docker.internal`.
 
@@ -194,9 +233,9 @@ Solo en IDE y QA (en `prod` springdoc está apagado y responde 404):
 - UI: http://localhost:18005/swagger-ui.html
 - OpenAPI JSON: http://localhost:18005/v3/api-docs
 
-La posición del bus y la línea de tiempo son públicas. Para `/telemetry/position` y
-`POST /trips/{id}/events` haz login en identity (`/auth/login`) con un usuario CONDUCTOR, OPERADOR o
-ADMIN y pega el `accessToken` en **Authorize**.
+La posición del bus y la línea de tiempo son públicas. Para `/driver/**` (CONDUCTOR),
+`/telemetry/position` (ADMIN) y `POST /trips/{id}/events` haz login en identity (`/auth/login`) con el
+usuario del rol que corresponda y pega el `accessToken` en **Authorize**.
 
 ## Observabilidad
 
@@ -222,6 +261,9 @@ mvn -B verify      # unitarias + integración con PostgreSQL y Redis reales (Tes
 - `DriverIT`: asignación de conductores y mis viajes de hoy con PostgreSQL y Redis reales e identity
   simulado con WireMock (validaciones, cruces, cancelación, eventos, y 20 hilos asignando al mismo
   conductor en viajes cruzados: solo queda 1).
+- `DriverTrackingIT`: ubicación del conductor y estados de rastreo con PostgreSQL y Redis reales
+  (conductor no asignado, fuera de ventana, pausa, lote desordenado, precisión mala, salto imposible,
+  paso a `SIN_SENAL` y a `FINALIZADO` con el job, y que `PositionUpdated` no lleve `conductorId`).
 
 Toda la plataforma: ver el README de **API-gateway**.
 
@@ -241,8 +283,8 @@ Toda la plataforma: ver el README de **API-gateway**.
 
 | Métrica | Medido (2026-10-22) | Mínimo |
 |---|---|---|
-| Líneas | 76,6 % | `jacoco.minimo.lineas` = 0.75 |
-| Ramas | 67,5 % | `jacoco.minimo.ramas` = 0.65 |
+| Líneas | 83,7 % | `jacoco.minimo.lineas` = 0.80 |
+| Ramas | 77,9 % | `jacoco.minimo.ramas` = 0.70 |
 
 **La cobertura nunca puede bajar: si agregas pruebas, sube el mínimo.** Corre `mvn verify`, mira
 el total en `target/site/jacoco/index.html` (o la tabla del CI), redondéalo hacia abajo al 5 % y
