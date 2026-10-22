@@ -12,9 +12,15 @@ public record FleetProperties(
         String catalogUrl,
         boolean simulatorEnabled,
         Duration trackingWindowBefore,
-        Duration trackingWindowAfter) {
+        Duration trackingWindowAfter,
+        Double maxAccuracyM,
+        Duration signalTimeout) {
 
     public FleetProperties {
+        // US-173: lecturas con precisión peor que esto (metros) se descartan.
+        maxAccuracyM = maxAccuracyM != null ? maxAccuracyM : 100.0;
+        // US-174: sin posiciones por más de esto, la sesión pasa a SIN_SENAL.
+        signalTimeout = signalTimeout != null ? signalTimeout : Duration.ofSeconds(60);
         telemetryStream = telemetryStream != null ? telemetryStream : "tripbus:telemetry";
         telemetryGroup = telemetryGroup != null ? telemetryGroup : "fleet-telemetry";
         maxPositionAge = maxPositionAge != null ? maxPositionAge : Duration.ofMinutes(10);

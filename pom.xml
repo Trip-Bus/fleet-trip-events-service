@@ -35,10 +35,10 @@
 
         <!-- Mínimos de cobertura total que exige jacoco:check (ver jacoco-maven-plugin).
              La cobertura nunca puede bajar: si agregas pruebas, sube el mínimo.
-             Medición del 2026-10-22 (US-121, US-170): líneas 76,6 %, ramas 67,5 %. Mínimos: líneas 0.75;
-             ramas 0.65. -->
-        <jacoco.minimo.lineas>0.75</jacoco.minimo.lineas>
-        <jacoco.minimo.ramas>0.65</jacoco.minimo.ramas>
+             Medición del 2026-10-22 (US-173 a US-175): líneas 80,1 %, ramas 72,1 %. Mínimos: líneas 0.80;
+             ramas 0.70. -->
+        <jacoco.minimo.lineas>0.80</jacoco.minimo.lineas>
+        <jacoco.minimo.ramas>0.70</jacoco.minimo.ramas>
 
         <!-- SonarQube Cloud: el análisis lo lanza el CI solo en develop (push y PR con base develop)
              cuando existe el secreto SONAR_TOKEN. El plan Free analiza una única rama. -->
@@ -63,6 +63,10 @@
             **/web/dto/AssignDriverRequest.java,
             **/web/dto/DriverAssignmentResponse.java,
             **/web/dto/DriverTripView.java,
+            **/web/dto/DriverLocationRequest.java,
+            **/web/dto/LocationResult.java,
+            **/web/dto/BatchLocationResponse.java,
+            **/web/dto/TrackingStatusResponse.java,
             **/domain/BusPosition.java,
             **/domain/OutboxMessage.java,
             **/domain/TripEvent.java,
@@ -248,6 +252,10 @@
                         <exclude>**/web/dto/AssignDriverRequest.class</exclude>
                         <exclude>**/web/dto/DriverAssignmentResponse.class</exclude>
                         <exclude>**/web/dto/DriverTripView.class</exclude>
+                        <exclude>**/web/dto/DriverLocationRequest.class</exclude>
+                        <exclude>**/web/dto/LocationResult.class</exclude>
+                        <exclude>**/web/dto/BatchLocationResponse.class</exclude>
+                        <exclude>**/web/dto/TrackingStatusResponse.class</exclude>
                         <exclude>**/domain/BusPosition.class</exclude>
                         <exclude>**/domain/OutboxMessage.class</exclude>
                         <exclude>**/domain/TripEvent.class</exclude>

@@ -28,9 +28,6 @@ public interface FleetItineraryRepository extends JpaRepository<FleetItinerary, 
     @Query("select f from FleetItinerary f where f.itineraryId = :id")
     Optional<FleetItinerary> findByIdForUpdate(@Param("id") UUID id);
 
-    /** ¿La empresa opera algún viaje con este bus? (autorización de la telemetría, US-038). */
-    boolean existsByBusIdAndCompanyId(UUID busId, UUID companyId);
-
     /** Viajes no cancelados del bus cuya ventana de seguimiento contiene el instante consultado. */
     @Query("""
             select f from FleetItinerary f
