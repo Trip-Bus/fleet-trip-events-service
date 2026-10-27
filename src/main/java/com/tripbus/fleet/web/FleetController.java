@@ -1,10 +1,12 @@
 package com.tripbus.fleet.web;
 
+import com.tripbus.fleet.common.error.ApiException;
 import com.tripbus.fleet.common.security.CurrentUser;
 import com.tripbus.fleet.domain.TripEventType;
 import com.tripbus.fleet.service.TelemetryService;
 import com.tripbus.fleet.service.TripAlertService;
 import com.tripbus.fleet.service.TripService;
+import com.tripbus.fleet.web.dto.EtaView;
 import com.tripbus.fleet.web.dto.ItineraryTracking;
 import com.tripbus.fleet.web.dto.PositionRequest;
 import com.tripbus.fleet.web.dto.PositionResponse;
@@ -64,6 +66,13 @@ public class FleetController {
     @GetMapping("/itineraries/{id}/bus-position")
     public ItineraryTracking itineraryBusPosition(@PathVariable UUID id) {
         return tripService.tracking(id);
+    }
+
+    /** US-180: hora estimada por parada. Pública; 404 NO_ETA fuera de la ventana, cancelado o sin posiciones aún. */
+    @GetMapping("/itineraries/{id}/eta")
+    public EtaView eta(@PathVariable UUID id) {
+        return tripService.eta(id)
+                .orElseThrow(() -> ApiException.notFound("NO_ETA", "No hay hora estimada para este viaje ahora"));
     }
 
     /**
