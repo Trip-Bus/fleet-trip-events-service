@@ -7,7 +7,7 @@ parada, retraso, desvío, fin). Incluye el **simulador GPS** del MVP.
 
 **Stack:** Java 21 · Spring Boot 3.5.16 · PostgreSQL 16 · Redis 7
 
-**HU:** US-038, US-039, US-046, US-047, US-121, US-170, US-171, US-173, US-174, US-175, US-176, HT-16 · **Puerto:** 18005 · **BD:** `tripbus_fleet` (puerto QA 18105)
+**HU:** US-038, US-039, US-046, US-047, US-121, US-170, US-171, US-173, US-174, US-175, US-176, US-177, US-180, HT-16 · **Puerto:** 18005 · **BD:** `tripbus_fleet` (puerto QA 18105)
 
 ## API
 
@@ -19,7 +19,8 @@ parada, retraso, desvío, fin). Incluye el **simulador GPS** del MVP.
 | POST | `/driver/location/batch` `[hasta 50 lecturas]` | US-173 (CONDUCTOR): lo que el celular guardó sin conexión, procesado en orden de timestamp. 202 `{aceptadas, descartadas, lecturas[]}`. |
 | POST | `/telemetry/position` | Ingesta GPS manual, **solo ADMIN** (pruebas). Responde 202: se encola en `tripbus:telemetry` y un consumidor independiente la procesa. |
 | GET | `/buses/{id}/position` | **Deprecado (se retira en el Sprint 5):** usar `/itineraries/{id}/bus-position`. Última posición conocida (Redis). Pública, solo si el bus tiene un viaje en ventana activa; si no, 404 `NO_ACTIVE_TRIP`. |
-| GET | `/itineraries/{id}/bus-position` | Dónde va mi bus: estado + paradas para el mapa y la posición (en `null` fuera de la ventana activa o si está cancelado), más `estadoRastreo` y `ultimaPosicionEn` (US-174; `null` si nunca se encendió). Pública. |
+| GET | `/itineraries/{id}/bus-position` | Dónde va mi bus: estado + paradas para el mapa y la posición (en `null` fuera de la ventana activa o si está cancelado), más `estadoRastreo` y `ultimaPosicionEn` (US-174; `null` si nunca se encendió) y `eta` (US-180; `null` fuera de la ventana, cancelado, finalizado o sin posiciones aún). Pública. |
+| GET | `/itineraries/{id}/eta` | US-180: `{itineraryId, retrasoMinutos, calculadaEn, paradas: [{orden, nombre, programada, estimada, alcanzada}]}`. Pública. 404 `NO_ETA` fuera de la ventana, cancelado, finalizado o sin posiciones aún; 404 `TRIP_NOT_FOUND` si el viaje no existe. |
 | POST | `/trips/{id}/events` `{tipo, descripcion, detalle, lat, lng, puedeContinuar}` | Novedad del viaje (operador **de la misma empresa**, o ADMIN). Un CONDUCTOR, además, debe estar **asignado** al viaje (si no, 403 `NOT_ASSIGNED`). US-176: las graves crean una alerta; `SOS` no va a la línea de tiempo y responde la alerta (201 nueva, 200 si ya había una abierta). Ver [tipos de novedad](#tipos-de-novedad-post-tripsidevents). |
 | POST | `/driver/trips/{itineraryId}/start` `{checklist, observacion}` | US-171 (CONDUCTOR asignado): inicia el viaje. Solo dentro de la ventana (409 `OUTSIDE_TRACKING_WINDOW`), con todos los ítems de `tripbus.fleet.checklist-items` en `true` (400 `CHECKLIST_INCOMPLETE` con `details.faltantes`) y una sola vez (409 `TRIP_ALREADY_STARTED`). Registra `INICIO` (sin duplicar la del simulador) y enciende el rastreo (`ACTIVO`). Responde `{itineraryId, iniciadoEn, finalizadoEn, estadoRastreo}`. |
 | POST | `/driver/trips/{itineraryId}/finish` | US-171 (CONDUCTOR asignado): finaliza el viaje si ya inició (409 `TRIP_NOT_STARTED` / `TRIP_ALREADY_FINISHED`). Registra `FIN` y el rastreo pasa a `FINALIZADO`. |
@@ -107,6 +108,10 @@ el cambio y un *relay* los publica (`FOR UPDATE SKIP LOCKED`, seguro con varias 
 | `TripAlertRaised` | US-176: novedad grave (`AVERIA`, `ACCIDENTE`, `VIA_CERRADA`) o SOS. Para el tópico **privado** de la empresa; sin datos del conductor | `{alertId, itineraryId, companyId, busId, tipo, gravedad, lat, lng, mensaje, puedeContinuar}` |
 | `TripAlertResolved` | US-176: el operador resuelve la alerta | `{alertId, itineraryId, companyId, busId, tipo, nota, resueltoEn}` |
 | `TripInterrupted` | US-176: la novedad trae `puedeContinuar: false`. El operador decide en catalog si reprograma o cancela (no es automático) | `{itineraryId, companyId, tipo}` |
+| `EtaUpdated` | US-180: alguna ETA cambió 1 minuto o más; como máximo una vez cada 30 s por viaje | `{itineraryId, retrasoMinutos, paradas: [{orden, nombre, programada, estimada, alcanzada}]}` |
+
+`TripEventReported` sale también para las novedades automáticas (`LLEGADA_PARADA`, `RETRASO`, `DESVIO`)
+y `TripAlertRaised` para el desvío detectado (gravedad `ALTA`).
 
 **Consume** (de catalog; idempotente por `eventId` con `processed_events`):
 
@@ -128,7 +133,48 @@ el cambio y un *relay* los publica (`FOR UPDATE SKIP LOCKED`, seguro con varias 
 | `SOS` | `CRITICA` | **nunca** | ✔ (una sola abierta por viaje) |
 
 `lat`/`lng` son opcionales: si no vienen se usa la última posición del viaje. Con `puedeContinuar: false`
-se publica además `TripInterrupted`.
+se publica además `TripInterrupted`. `LLEGADA_PARADA`, `RETRASO` y `DESVIO` también las genera fleet
+solo (ver abajo): esas llevan `origen: "AUTOMATICO"` en el detalle (y en la columna `origen`).
+
+### Detección automática y hora estimada (US-177, US-180)
+
+Se calcula al procesar **cada posición aceptada** de un viaje en ventana (del conductor o del simulador,
+en `TelemetryService.process`). Corre después del commit de la posición, en su propia transacción:
+si algo falla, la posición ya quedó guardada. Por posición se consulta la base una vez (el viaje) y,
+solo al llegar a una parada, otra para no duplicar su `LLEGADA_PARADA`; las paradas salen de
+`RouteStopsCache` (Redis `fleet:route:{id}:stops`) y el estado entre lecturas vive en Redis.
+
+**Geometría:** la ruta es la polilínea de sus paradas en orden, **en línea recta entre paradas** (no es
+el trazado de la vía). Distancias con haversine; distancia y proyección sobre cada tramo en un plano
+local (`common/geo/Geo`).
+
+- **Llegada a parada:** a menos de `stop-radius-m` de la siguiente parada pendiente (`stop-radius-ends-m`
+  para la primera y la última) se registra `LLEGADA_PARADA` `{parada, orden}` una sola vez por parada
+  (avance en `fleet_itineraries.ultima_parada_real`). Si ya existe para esa parada (p. ej. del
+  simulador) no se duplica, y el simulador tampoco duplica la automática. Si el bus pasa una parada sin
+  detectarla, cuenta la siguiente pendiente a la que llegue.
+- **Retraso:** desde `delay-threshold-min` minutos de retraso se registra `RETRASO` `{minutos}`; se repite
+  solo si creció 15 minutos más desde el último aviso (Redis `fleet:itinerary:{id}:retraso-avisado`).
+  No se avisa una vez alcanzadas todas las paradas.
+- **Desvío:** a más de `deviation-m` de la polilínea en 3 lecturas seguidas se registra `DESVIO`
+  `{distanciaM}` y se crea una alerta de gravedad `ALTA` (`trip_alerts` + `TripAlertRaised`). Solo una
+  alerta de desvío abierta a la vez por viaje; al volver a la ruta se reinicia la cuenta.
+- **ETA (US-180):** hora programada de cada parada = `fechaSalida + minutos_desde_salida`. La posición se
+  proyecta sobre el tramo entre la última parada alcanzada y la siguiente (si ya va más adelante, sobre
+  el tramo más cercano desde ahí) y la fracción recorrida da la hora programada de ese punto:
+  `retraso = ahora − esa hora` (nunca menor a −5 min). Siguiente parada: si la velocidad promedio de las
+  últimas 3 lecturas supera 10 km/h, `ahora + distancia restante / velocidad`; si no, `programada +
+  retraso`. Demás paradas: `programada + retraso`, nunca antes de ahora. Se guarda en Redis
+  (`fleet:itinerary:{id}:eta`) y se publica `EtaUpdated` solo si alguna ETA cambió 1 minuto o más y como
+  máximo una vez por `eta-publish-interval` por viaje.
+
+| Propiedad (`tripbus.fleet.*`) | Por defecto | Qué controla |
+|---|---|---|
+| `stop-radius-m` | `150` | Radio (m) de llegada a una parada intermedia |
+| `stop-radius-ends-m` | `300` | Radio (m) de llegada a la primera y la última parada |
+| `delay-threshold-min` | `10` | Minutos de retraso desde los que se registra `RETRASO` |
+| `deviation-m` | `1000` | Distancia (m) a la ruta a partir de la cual una lectura cuenta como desvío |
+| `eta-publish-interval` | `30s` | Intervalo mínimo entre dos `EtaUpdated` del mismo viaje |
 
 ## Simulador GPS
 
@@ -299,6 +345,10 @@ mvn -B verify      # unitarias + integración con PostgreSQL y Redis reales (Tes
 - `TripOperationIT`: sincronización con catalog (rutas, reprogramación con conflicto de conductor,
   cambio de bus), inicio y fin del viaje (checklist incompleto, doble inicio, fin forzado) y alertas
   (novedades graves, SOS repetido y fuera de la línea de tiempo, alerta de otra empresa: 404).
+- `TripAnalysisIT`: detección automática y ETA con una secuencia de posiciones por Bogotá → Chocontá →
+  Tunja (llegada a cada parada, retraso que se repite al crecer 15 min, desvío con una sola alerta, ETA y
+  límite de `EtaUpdated`), sin duplicados con el simulador. `GeoTest` y `EtaCalculatorTest`: geometría y
+  cálculo del ETA con instantes fijos.
 
 Toda la plataforma: ver el README de **API-gateway**.
 
@@ -318,8 +368,8 @@ Toda la plataforma: ver el README de **API-gateway**.
 
 | Métrica | Medido (2026-10-26) | Mínimo |
 |---|---|---|
-| Líneas | 86,8 % | `jacoco.minimo.lineas` = 0.85 |
-| Ramas | 82,6 % | `jacoco.minimo.ramas` = 0.80 |
+| Líneas | 88,5 % | `jacoco.minimo.lineas` = 0.85 |
+| Ramas | 85,8 % | `jacoco.minimo.ramas` = 0.80 |
 
 **La cobertura nunca puede bajar: si agregas pruebas, sube el mínimo.** Corre `mvn verify`, mira
 el total en `target/site/jacoco/index.html` (o la tabla del CI), redondéalo hacia abajo al 5 % y

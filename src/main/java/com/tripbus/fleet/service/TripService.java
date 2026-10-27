@@ -12,6 +12,7 @@ import com.tripbus.fleet.domain.TrackingSession;
 import com.tripbus.fleet.repository.TrackingSessionRepository;
 import com.tripbus.fleet.repository.TripAssignmentRepository;
 import com.tripbus.fleet.repository.TripEventRepository;
+import com.tripbus.fleet.web.dto.EtaView;
 import com.tripbus.fleet.web.dto.ItineraryTracking;
 import com.tripbus.fleet.web.dto.PositionResponse;
 import com.tripbus.fleet.web.dto.StopView;
@@ -27,6 +28,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
@@ -43,6 +45,7 @@ public class TripService {
     private final TrackingWindow trackingWindow;
     private final Outbox outbox;
     private final TripAlertService alertService;
+    private final EtaStore etaStore;
     private final ObjectMapper objectMapper;
     private final Clock clock;
 
@@ -50,8 +53,10 @@ public class TripService {
                        TripAssignmentRepository assignmentRepository, TrackingSessionRepository sessionRepository,
                        RouteStopsCache stopsCache,
                        TelemetryService telemetryService, TrackingWindow trackingWindow,
-                       Outbox outbox, TripAlertService alertService, ObjectMapper objectMapper, Clock clock) {
+                       Outbox outbox, TripAlertService alertService, EtaStore etaStore, ObjectMapper objectMapper,
+                       Clock clock) {
         this.alertService = alertService;
+        this.etaStore = etaStore;
         this.itineraryRepository = itineraryRepository;
         this.eventRepository = eventRepository;
         this.assignmentRepository = assignmentRepository;
@@ -105,7 +110,7 @@ public class TripService {
 
     private FleetItinerary autorizar(UUID itineraryId, Reportante quien) {
         FleetItinerary itinerary = itineraryRepository.findById(itineraryId)
-                .orElseThrow(() -> ApiException.notFound("TRIP_NOT_FOUND", "El viaje no existe"));
+                .orElseThrow(TripService::tripNotFound);
         if (!quien.admin() && !Objects.equals(quien.companyId(), itinerary.getCompanyId())) {
             throw ApiException.forbidden("NOT_YOUR_COMPANY", "Solo puede reportar novedades de viajes de su empresa");
         }
@@ -144,7 +149,7 @@ public class TripService {
     @Transactional
     public ItineraryTracking tracking(UUID itineraryId) {
         FleetItinerary itinerary = itineraryRepository.findById(itineraryId)
-                .orElseThrow(() -> ApiException.notFound("TRIP_NOT_FOUND", "El viaje no existe"));
+                .orElseThrow(TripService::tripNotFound);
         Instant now = clock.instant();
         PositionResponse position = visiblePosition(itinerary, now);
         String estado = estado(itinerary, position, now);
@@ -157,7 +162,28 @@ public class TripService {
         return new ItineraryTracking(itineraryId, itinerary.getBusId(), itinerary.getOrigen(), itinerary.getDestino(),
                 itinerary.getFechaSalida(), itinerary.getFechaLlegada(), estado, position, paradas,
                 session != null ? session.getEstado().name() : null,
-                session != null ? session.getUltimaPosicionEn() : null);
+                session != null ? session.getUltimaPosicionEn() : null,
+                etaVigente(itinerary, now).orElse(null));
+    }
+
+    /** US-180: GET /itineraries/{id}/eta. Vacío fuera de la ventana, cancelado, finalizado o sin posiciones aún. */
+    @Transactional(readOnly = true)
+    public Optional<EtaView> eta(UUID itineraryId) {
+        FleetItinerary itinerary = itineraryRepository.findById(itineraryId)
+                .orElseThrow(TripService::tripNotFound);
+        return etaVigente(itinerary, clock.instant());
+    }
+
+    private Optional<EtaView> etaVigente(FleetItinerary itinerary, Instant now) {
+        if (itinerary.isFinalizado() || !trackingWindow.isActive(itinerary, now)) {
+            return Optional.empty();
+        }
+        return etaStore.find(itinerary.getItineraryId());
+    }
+
+    /** US-177: ¿ya hay LLEGADA_PARADA de esa parada? (el simulador no la duplica). */
+    public boolean existeLlegada(UUID itineraryId, int orden) {
+        return eventRepository.existsLlegada(itineraryId, orden);
     }
 
     /** Estado del viaje en ese instante (el mismo de bus-position): lo usa también US-170. */
@@ -204,6 +230,10 @@ public class TripService {
         return telemetryService.lastByBus(busId)
                 .filter(p -> !p.timestamp().isBefore(trackingWindow.start(active)))
                 .orElseThrow(() -> ApiException.notFound("POSITION_NOT_FOUND", "No hay posiciones para este bus"));
+    }
+
+    private static ApiException tripNotFound() {
+        return ApiException.notFound("TRIP_NOT_FOUND", "El viaje no existe");
     }
 
     private TripEventResponse toResponse(TripEvent e) {

@@ -72,6 +72,22 @@ public class TripAlertService {
         return toResponse(alert);
     }
 
+    /**
+     * US-177: alerta de desvío detectado (gravedad ALTA), solo si el viaje no tiene ya una abierta.
+     * Devuelve true si la creó. Requiere transacción (el viaje ya viene bloqueado por quien llama).
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public boolean raiseDesvio(FleetItinerary itinerary, double lat, double lng, String mensaje) {
+        if (alertRepository.findFirstByItineraryIdAndTipoAndEstado(itinerary.getItineraryId(), TripEventType.DESVIO,
+                TripAlert.Estado.ABIERTA).isPresent()) {
+            return false;
+        }
+        TripAlert alert = alertRepository.save(new TripAlert(itinerary, TripEventType.DESVIO, lat, lng, mensaje, true,
+                null, clock.instant()).conGravedad(TripEventType.Gravedad.ALTA));
+        outbox.add(FleetEvents.TRIP_ALERT_RAISED, raisedPayload(alert));
+        return true;
+    }
+
     /** POST /driver/sos: resuelve el viaje activo del conductor (US-175: 409 si no tiene). */
     @Transactional
     public SosResult sos(UUID conductorId, Double lat, Double lng, String mensaje) {

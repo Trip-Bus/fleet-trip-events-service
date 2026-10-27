@@ -35,7 +35,7 @@
 
         <!-- Mínimos de cobertura total que exige jacoco:check (ver jacoco-maven-plugin).
              La cobertura nunca puede bajar: si agregas pruebas, sube el mínimo.
-             Medición del 2026-10-26 (HT-16, US-171, US-176; JVM en UTC como el CI): líneas 86,8 %, ramas 82,6 %.
+             Medición del 2026-10-26 (US-177, US-180; JVM en UTC como el CI): líneas 88,5 %, ramas 85,8 %.
              Mínimos: líneas 0.85; ramas 0.80. -->
         <jacoco.minimo.lineas>0.85</jacoco.minimo.lineas>
         <jacoco.minimo.ramas>0.80</jacoco.minimo.ramas>
@@ -72,6 +72,7 @@
             **/web/dto/SosRequest.java,
             **/web/dto/ResolveAlertRequest.java,
             **/web/dto/TripAlertResponse.java,
+            **/web/dto/EtaView.java,
             **/domain/BusPosition.java,
             **/domain/OutboxMessage.java,
             **/domain/TripEvent.java,
@@ -266,6 +267,7 @@
                         <exclude>**/web/dto/SosRequest.class</exclude>
                         <exclude>**/web/dto/ResolveAlertRequest.class</exclude>
                         <exclude>**/web/dto/TripAlertResponse.class</exclude>
+                        <exclude>**/web/dto/EtaView.class</exclude>
                         <exclude>**/domain/BusPosition.class</exclude>
                         <exclude>**/domain/OutboxMessage.class</exclude>
                         <exclude>**/domain/TripEvent.class</exclude>

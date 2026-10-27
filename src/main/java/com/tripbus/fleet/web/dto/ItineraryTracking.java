@@ -20,5 +20,7 @@ public record ItineraryTracking(
         PositionResponse posicion,
         List<StopView> paradas,
         String estadoRastreo,
-        Instant ultimaPosicionEn) {
+        Instant ultimaPosicionEn,
+        // US-180: hora estimada por parada (null fuera de la ventana, cancelado o sin posiciones aún).
+        EtaView eta) {
 }

@@ -88,6 +88,12 @@ public class TripAlert {
         this.creadoEn = creadoEn;
     }
 
+    /** US-177: el desvío automático es ALTA aunque un DESVIO reportado a mano sea NORMAL. */
+    public TripAlert conGravedad(TripEventType.Gravedad gravedad) {
+        this.gravedad = gravedad;
+        return this;
+    }
+
     public void resolver(UUID resueltoPor, String nota, Instant now) {
         this.estado = Estado.RESUELTA;
         this.resueltoPor = resueltoPor;

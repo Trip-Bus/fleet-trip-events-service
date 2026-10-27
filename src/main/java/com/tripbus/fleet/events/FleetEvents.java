@@ -11,6 +11,7 @@ public final class FleetEvents {
     public static final String TRIP_ALERT_RAISED = "TripAlertRaised";
     public static final String TRIP_ALERT_RESOLVED = "TripAlertResolved";
     public static final String TRIP_INTERRUPTED = "TripInterrupted";
+    public static final String ETA_UPDATED = "EtaUpdated";
 
     // Consumidos de catalog.
     public static final String ITINERARY_PUBLISHED = "ItineraryPublished";

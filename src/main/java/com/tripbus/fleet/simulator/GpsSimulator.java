@@ -37,6 +37,8 @@ import java.util.concurrent.ThreadLocalRandom;
 public class GpsSimulator {
 
     private static final Logger log = LoggerFactory.getLogger(GpsSimulator.class);
+    static final String ORIGEN = "SIMULADOR";
+    private static final String PARADA = "parada";
 
     private final FleetItineraryRepository itineraryRepository;
     private final RouteStopsCache stopsCache;
@@ -96,31 +98,45 @@ public class GpsSimulator {
         }
 
         tx.executeWithoutResult(s -> {
-            FleetItinerary it = itineraryRepository.findById(itinerary.getItineraryId()).orElseThrow();
+            // Bloqueado: la detección automática (US-177) de una posición del mismo viaje espera, y así
+            // ninguno de los dos duplica la LLEGADA_PARADA del otro.
+            FleetItinerary it = itineraryRepository.findByIdForUpdate(itinerary.getItineraryId()).orElseThrow();
             int last = it.getSimUltimaParada();
             if (last < 0) {
                 tripService.record(it, TripEventType.INICIO, "El bus salió de " + stops.get(0).getNombre(),
-                        Map.of("parada", stops.get(0).getNombre()), null, "SIMULADOR");
+                        Map.of(PARADA, stops.get(0).getNombre()), null, ORIGEN);
                 last = 0;
             }
-            for (int i = last + 1; i < stops.size() - 1; i++) {
-                if (stops.get(i).getMinutosDesdeSalida() <= elapsedMin) {
-                    tripService.record(it, TripEventType.LLEGADA_PARADA, "Llegada a " + stops.get(i).getNombre(),
-                            Map.of("parada", stops.get(i).getNombre(), "orden", stops.get(i).getOrden()), null,
-                            "SIMULADOR");
-                    last = i;
-                }
-            }
+            last = paradasIntermedias(it, stops, last, elapsedMin);
             if (!now.isBefore(it.getFechaLlegada()) && last < stops.size() - 1) {
                 RouteStop destino = stops.get(stops.size() - 1);
                 tripService.record(it, TripEventType.FIN, "El bus llegó a " + destino.getNombre(),
-                        Map.of("parada", destino.getNombre()), null, "SIMULADOR");
+                        Map.of(PARADA, destino.getNombre()), null, ORIGEN);
                 last = stops.size() - 1;
             }
             if (last != it.getSimUltimaParada()) {
                 it.avanzarSimulacion(last);
             }
         });
+    }
+
+    /**
+     * LLEGADA_PARADA de las paradas intermedias cuyo horario ya pasó, sin duplicar la que ya registró la
+     * detección automática (US-177). Devuelve el índice de la última parada anunciada.
+     */
+    private int paradasIntermedias(FleetItinerary it, List<RouteStop> stops, int last, double elapsedMin) {
+        int ultima = last;
+        for (int i = last + 1; i < stops.size() - 1; i++) {
+            RouteStop stop = stops.get(i);
+            if (stop.getMinutosDesdeSalida() <= elapsedMin) {
+                if (!tripService.existeLlegada(it.getItineraryId(), stop.getOrden())) {
+                    tripService.record(it, TripEventType.LLEGADA_PARADA, "Llegada a " + stop.getNombre(),
+                            Map.of(PARADA, stop.getNombre(), "orden", stop.getOrden()), null, ORIGEN);
+                }
+                ultima = i;
+            }
+        }
+        return ultima;
     }
 
     record Point(double lat, double lng, double speed, double bearing) {

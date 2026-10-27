@@ -96,6 +96,15 @@ tripbus:
     signal-timeout: 60s
     # US-171: ítems del checklist de salida; todos deben venir en true para iniciar el viaje.
     checklist-items: manifiestoRevisado,documentosBus,lucesYLlantas,botiquinYExtintor
+    # US-177: llegada a parada a menos de stop-radius-m de la siguiente pendiente (stop-radius-ends-m
+    # para la primera y la última); RETRASO automático desde delay-threshold-min (y cada 15 min más);
+    # DESVIO a más de deviation-m de la ruta en 3 lecturas seguidas.
+    stop-radius-m: 150
+    stop-radius-ends-m: 300
+    delay-threshold-min: 10
+    deviation-m: 1000
+    # US-180: EtaUpdated como máximo una vez por este intervalo por viaje.
+    eta-publish-interval: 30s
   jobs:
     simulator-interval-ms: 5000
     # US-174/US-175: job de estados de rastreo (SIN_SENAL, FINALIZADO), en un solo nodo.

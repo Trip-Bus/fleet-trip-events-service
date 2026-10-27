@@ -12,6 +12,7 @@ import com.tripbus.fleet.web.dto.PositionRequest;
 import com.tripbus.fleet.web.dto.PositionResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.redis.connection.stream.StreamRecords;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -46,12 +47,14 @@ public class TelemetryService {
     private final FleetProperties properties;
     private final TrackingWindow trackingWindow;
     private final Clock clock;
+    private final ApplicationEventPublisher events;
     private final java.util.concurrent.atomic.AtomicLong ingested = new java.util.concurrent.atomic.AtomicLong();
 
     public TelemetryService(StringRedisTemplate redis, BusPositionRepository positionRepository,
                             FleetItineraryRepository itineraryRepository, Outbox outbox,
                             ObjectMapper objectMapper, FleetProperties properties, TrackingWindow trackingWindow,
-                            Clock clock) {
+                            Clock clock, ApplicationEventPublisher events) {
+        this.events = events;
         this.redis = redis;
         this.positionRepository = positionRepository;
         this.itineraryRepository = itineraryRepository;
@@ -167,6 +170,10 @@ public class TelemetryService {
         payload.put("rumbo", view.rumbo());
         payload.put("timestamp", view.timestamp());
         outbox.add(FleetEvents.POSITION_UPDATED, payload);
+        // US-177/US-180: detección automática y ETA, tras el commit (ver TripAnalysisService).
+        if (itineraryId != null) {
+            events.publishEvent(new PositionAccepted(itineraryId, view.lat(), view.lng(), view.timestamp()));
+        }
     }
 
     public Optional<PositionResponse> lastByBus(UUID busId) {

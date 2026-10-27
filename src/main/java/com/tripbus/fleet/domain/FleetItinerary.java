@@ -51,6 +51,10 @@ public class FleetItinerary {
     @Column(name = "finalizado_en")
     private Instant finalizadoEn;
 
+    /** US-177: orden de la última parada a la que llegó el bus según su posición (0 = ninguna). */
+    @Column(name = "ultima_parada_real", nullable = false)
+    private int ultimaParadaReal;
+
     protected FleetItinerary() {
     }
 
@@ -94,6 +98,15 @@ public class FleetItinerary {
     /** US-171. */
     public void finalizar(Instant now) {
         this.finalizadoEn = now;
+    }
+
+    /** US-177: una sola vez por parada (el avance nunca retrocede). */
+    public void alcanzarParada(int orden) {
+        this.ultimaParadaReal = Math.max(this.ultimaParadaReal, orden);
+    }
+
+    public int getUltimaParadaReal() {
+        return ultimaParadaReal;
     }
 
     public boolean isIniciado() {
