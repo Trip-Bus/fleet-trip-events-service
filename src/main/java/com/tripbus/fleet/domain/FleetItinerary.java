@@ -41,6 +41,16 @@ public class FleetItinerary {
     @Column(name = "sim_ultima_parada", nullable = false)
     private int simUltimaParada = -1;
 
+    /** US-171: cuándo y quién inició el viaje, y cuándo terminó (null si no ha pasado). */
+    @Column(name = "iniciado_en")
+    private Instant iniciadoEn;
+
+    @Column(name = "iniciado_por")
+    private UUID iniciadoPor;
+
+    @Column(name = "finalizado_en")
+    private Instant finalizadoEn;
+
     protected FleetItinerary() {
     }
 
@@ -62,6 +72,36 @@ public class FleetItinerary {
 
     public void avanzarSimulacion(int parada) {
         this.simUltimaParada = parada;
+    }
+
+    /** HT-16 (ItineraryRescheduled): la ventana de rastreo se mueve sola con las nuevas fechas. */
+    public void reprogramar(Instant fechaSalida, Instant fechaLlegada) {
+        this.fechaSalida = fechaSalida;
+        this.fechaLlegada = fechaLlegada;
+    }
+
+    /** HT-16 (ItineraryBusChanged). */
+    public void cambiarBus(UUID busId) {
+        this.busId = busId;
+    }
+
+    /** US-171. */
+    public void iniciar(UUID conductorId, Instant now) {
+        this.iniciadoEn = now;
+        this.iniciadoPor = conductorId;
+    }
+
+    /** US-171. */
+    public void finalizar(Instant now) {
+        this.finalizadoEn = now;
+    }
+
+    public boolean isIniciado() {
+        return iniciadoEn != null;
+    }
+
+    public boolean isFinalizado() {
+        return finalizadoEn != null;
     }
 
     public UUID getItineraryId() {
@@ -102,5 +142,17 @@ public class FleetItinerary {
 
     public int getSimUltimaParada() {
         return simUltimaParada;
+    }
+
+    public Instant getIniciadoEn() {
+        return iniciadoEn;
+    }
+
+    public UUID getIniciadoPor() {
+        return iniciadoPor;
+    }
+
+    public Instant getFinalizadoEn() {
+        return finalizadoEn;
     }
 }

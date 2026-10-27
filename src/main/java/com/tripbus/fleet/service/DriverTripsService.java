@@ -61,6 +61,7 @@ public class DriverTripsService {
         FleetItinerary it = a.getItinerary();
         return new DriverTripView(it.getItineraryId(), it.getBusId(), it.getOrigen(), it.getDestino(),
                 it.getFechaSalida(), it.getFechaLlegada(), a.getRol().name(), tripService.estado(it, now),
-                trackingWindow.start(it), trackingWindow.end(it), trackingWindow.isActive(it, now));
+                trackingWindow.start(it), trackingWindow.end(it), trackingWindow.isActive(it, now),
+                it.isIniciado(), it.isFinalizado());
     }
 }

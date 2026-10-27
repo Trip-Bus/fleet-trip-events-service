@@ -17,6 +17,7 @@ import com.tripbus.fleet.web.dto.TrackingStatusResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -86,8 +87,33 @@ public class DriverTrackingService {
     }
 
     private TrackingStatusResponse cambiarPorConductor(UUID conductorId, TrackingStatus nuevo) {
+        FleetItinerary itinerary = viajeEnVentana(conductorId, clock.instant());
+        return toResponse(itinerary, cambiarSesion(itinerary, conductorId, nuevo));
+    }
+
+    /** US-171: al iniciar el viaje se enciende el rastreo como con /driver/tracking/start. Requiere transacción. */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public TrackingSession encender(FleetItinerary itinerary, UUID conductorId) {
+        return cambiarSesion(itinerary, conductorId, TrackingStatus.ACTIVO);
+    }
+
+    /**
+     * US-171: al finalizar el viaje la sesión pasa a FINALIZADO (se crea si nunca se encendió) y
+     * desde ahí no se acepta nada más. Requiere transacción.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public TrackingSession finalizar(FleetItinerary itinerary) {
         Instant now = clock.instant();
-        FleetItinerary itinerary = viajeEnVentana(conductorId, now);
+        boolean creada = sessionRepository.crearSimuladaSiNoExiste(itinerary.getItineraryId(), now) == 1;
+        TrackingSession session = sessionRepository.findByIdForUpdate(itinerary.getItineraryId()).orElseThrow();
+        if (session.cambiar(TrackingStatus.FINALIZADO, now) || creada) {
+            publicar(itinerary, session);
+        }
+        return session;
+    }
+
+    private TrackingSession cambiarSesion(FleetItinerary itinerary, UUID conductorId, TrackingStatus nuevo) {
+        Instant now = clock.instant();
         boolean creada = sessionRepository.crearSiNoExiste(itinerary.getItineraryId(), conductorId, now) == 1;
         TrackingSession session = sessionRepository.findByIdForUpdate(itinerary.getItineraryId()).orElseThrow();
         if (session.getEstado() == TrackingStatus.FINALIZADO) {
@@ -97,7 +123,7 @@ public class DriverTrackingService {
         if (session.cambiar(nuevo, now) || creada) {
             publicar(itinerary, session);
         }
-        return toResponse(itinerary, session);
+        return session;
     }
 
     /**
@@ -174,7 +200,7 @@ public class DriverTrackingService {
      * Si tiene un viaje asignado cerca (salida a menos de 24 h) pero fuera de la ventana:
      * 409 OUTSIDE_TRACKING_WINDOW; si no tiene ninguno: 409 NO_ACTIVE_TRIP.
      */
-    FleetItinerary viajeEnVentana(UUID conductorId, Instant now) {
+    public FleetItinerary viajeEnVentana(UUID conductorId, Instant now) {
         return assignmentRepository.findDelConductorEnVentana(conductorId, now.plus(trackingWindow.before()),
                         now.minus(trackingWindow.after()))
                 .stream().findFirst()

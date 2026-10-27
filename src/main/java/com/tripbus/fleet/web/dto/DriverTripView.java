@@ -15,5 +15,8 @@ public record DriverTripView(
         String estado,
         Instant ventanaInicio,
         Instant ventanaFin,
-        boolean puedeCompartirUbicacion) {
+        boolean puedeCompartirUbicacion,
+        // US-171: si el conductor ya inició / finalizó el viaje.
+        boolean iniciado,
+        boolean finalizado) {
 }

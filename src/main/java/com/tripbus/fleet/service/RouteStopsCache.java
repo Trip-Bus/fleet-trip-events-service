@@ -6,6 +6,8 @@ import com.tripbus.fleet.repository.RouteStopRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.UUID;
@@ -22,6 +24,18 @@ public class RouteStopsCache {
     public RouteStopsCache(RouteStopRepository repository, CatalogClient catalogClient) {
         this.repository = repository;
         this.catalogClient = catalogClient;
+    }
+
+    /**
+     * HT-16 (RouteCreated / RouteUpdated): reemplaza las paradas guardadas de la ruta por las que
+     * manda catalog. Como la copia local es la caché, borrarla y escribirla de nuevo la "limpia".
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void reemplazar(UUID routeId, List<CatalogClient.Stop> paradas) {
+        repository.deleteByRouteId(routeId);
+        repository.saveAll(paradas.stream()
+                .map(s -> new RouteStop(routeId, s.orden(), s.nombre(), s.lat(), s.lng(), s.minutosDesdeSalida()))
+                .toList());
     }
 
     public List<RouteStop> stops(UUID routeId) {

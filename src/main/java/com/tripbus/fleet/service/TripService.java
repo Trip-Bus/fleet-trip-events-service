@@ -15,6 +15,7 @@ import com.tripbus.fleet.repository.TripEventRepository;
 import com.tripbus.fleet.web.dto.ItineraryTracking;
 import com.tripbus.fleet.web.dto.PositionResponse;
 import com.tripbus.fleet.web.dto.StopView;
+import com.tripbus.fleet.web.dto.TripEventRequest;
 import com.tripbus.fleet.web.dto.TripEventResponse;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -31,6 +32,8 @@ import java.util.UUID;
 @Service
 public class TripService {
 
+    static final String ORIGEN_USUARIO = "USUARIO";
+
     private final FleetItineraryRepository itineraryRepository;
     private final TripEventRepository eventRepository;
     private final TripAssignmentRepository assignmentRepository;
@@ -39,6 +42,7 @@ public class TripService {
     private final TelemetryService telemetryService;
     private final TrackingWindow trackingWindow;
     private final Outbox outbox;
+    private final TripAlertService alertService;
     private final ObjectMapper objectMapper;
     private final Clock clock;
 
@@ -46,7 +50,8 @@ public class TripService {
                        TripAssignmentRepository assignmentRepository, TrackingSessionRepository sessionRepository,
                        RouteStopsCache stopsCache,
                        TelemetryService telemetryService, TrackingWindow trackingWindow,
-                       Outbox outbox, ObjectMapper objectMapper, Clock clock) {
+                       Outbox outbox, TripAlertService alertService, ObjectMapper objectMapper, Clock clock) {
+        this.alertService = alertService;
         this.itineraryRepository = itineraryRepository;
         this.eventRepository = eventRepository;
         this.assignmentRepository = assignmentRepository;
@@ -65,18 +70,49 @@ public class TripService {
      * (US-121). El evento va al outbox en la misma transacción.
      */
     @Transactional
-    public TripEventResponse report(UUID itineraryId, TripEventType tipo, String descripcion,
-                                    Map<String, Object> detalle, UUID userId, boolean isAdmin, boolean isConductor,
-                                    UUID companyId, String origen) {
+    public TripEventResponse report(UUID itineraryId, TripEventRequest request, Reportante quien) {
+        FleetItinerary itinerary = autorizar(itineraryId, quien);
+        TripEventResponse event = record(itinerary, request.tipo(), request.descripcion(), request.detalle(),
+                quien.userId(), ORIGEN_USUARIO);
+        // US-176: AVERIA, ACCIDENTE y VIA_CERRADA crean además una alerta para el operador.
+        if (request.tipo().generaAlerta()) {
+            alertService.raise(itinerary, request.tipo(), request.lat(), request.lng(), request.descripcion(),
+                    request.puedeContinuar(), quien.userId());
+        }
+        // El operador decide en catalog si reprograma o cancela: aquí solo se avisa.
+        if (Boolean.FALSE.equals(request.puedeContinuar())) {
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("itineraryId", itinerary.getItineraryId());
+            payload.put("companyId", itinerary.getCompanyId());
+            payload.put("tipo", request.tipo().name());
+            outbox.add(FleetEvents.TRIP_INTERRUPTED, payload);
+        }
+        return event;
+    }
+
+    /** Quien reporta una novedad (del JWT): usuario, si es ADMIN o CONDUCTOR, y su empresa. */
+    public record Reportante(UUID userId, boolean admin, boolean conductor, UUID companyId) {
+    }
+
+    /**
+     * El viaje existe, es de la empresa de quien reporta (salvo ADMIN) y, si es CONDUCTOR, está asignado.
+     * Lo usa también el SOS de POST /trips/{id}/events.
+     */
+    @Transactional(readOnly = true)
+    public FleetItinerary autorizarReporte(UUID itineraryId, Reportante quien) {
+        return autorizar(itineraryId, quien);
+    }
+
+    private FleetItinerary autorizar(UUID itineraryId, Reportante quien) {
         FleetItinerary itinerary = itineraryRepository.findById(itineraryId)
                 .orElseThrow(() -> ApiException.notFound("TRIP_NOT_FOUND", "El viaje no existe"));
-        if (!isAdmin && userId != null && !Objects.equals(companyId, itinerary.getCompanyId())) {
+        if (!quien.admin() && !Objects.equals(quien.companyId(), itinerary.getCompanyId())) {
             throw ApiException.forbidden("NOT_YOUR_COMPANY", "Solo puede reportar novedades de viajes de su empresa");
         }
-        if (isConductor && !assignmentRepository.estaAsignado(itineraryId, userId)) {
+        if (quien.conductor() && !assignmentRepository.estaAsignado(itineraryId, quien.userId())) {
             throw DriverAssignmentService.notAssigned();
         }
-        return record(itinerary, tipo, descripcion, detalle, userId, origen);
+        return itinerary;
     }
 
     /** Registra el evento + outbox. Requiere transacción. */
@@ -138,9 +174,18 @@ public class TripService {
                 : null;
     }
 
+    /**
+     * US-171: si el conductor marcó inicio o fin, mandan esos datos (EN_RUTA tras el inicio y
+     * FINALIZADO tras el fin, aunque no haya llegado la hora). Sin ellos (p. ej. con el simulador),
+     * el estado se calcula con el horario y la última posición.
+     */
     static String estado(FleetItinerary itinerary, PositionResponse position, Instant now) {
         if (itinerary.isCancelado()) {
             return "CANCELADO";
+        } else if (itinerary.isFinalizado()) {
+            return "FINALIZADO";
+        } else if (itinerary.isIniciado()) {
+            return "EN_RUTA";
         } else if (now.isAfter(itinerary.getFechaLlegada())) {
             return "FINALIZADO";
         } else if (now.isBefore(itinerary.getFechaSalida())) {

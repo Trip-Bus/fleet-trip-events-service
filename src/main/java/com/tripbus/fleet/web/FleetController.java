@@ -1,7 +1,9 @@
 package com.tripbus.fleet.web;
 
 import com.tripbus.fleet.common.security.CurrentUser;
+import com.tripbus.fleet.domain.TripEventType;
 import com.tripbus.fleet.service.TelemetryService;
+import com.tripbus.fleet.service.TripAlertService;
 import com.tripbus.fleet.service.TripService;
 import com.tripbus.fleet.web.dto.ItineraryTracking;
 import com.tripbus.fleet.web.dto.PositionRequest;
@@ -28,10 +30,12 @@ public class FleetController {
 
     private final TelemetryService telemetryService;
     private final TripService tripService;
+    private final TripAlertService alertService;
 
-    public FleetController(TelemetryService telemetryService, TripService tripService) {
+    public FleetController(TelemetryService telemetryService, TripService tripService, TripAlertService alertService) {
         this.telemetryService = telemetryService;
         this.tripService = tripService;
+        this.alertService = alertService;
     }
 
     /**
@@ -62,15 +66,24 @@ public class FleetController {
         return tripService.tracking(id);
     }
 
-    /** US-046: reportar una novedad del viaje. */
+    /**
+     * US-046: reportar una novedad del viaje (201 con la novedad). US-176: un SOS no va a la línea de
+     * tiempo pública: crea (201) o devuelve la alerta SOS abierta del viaje (200).
+     */
     @PostMapping("/trips/{id}/events")
     @PreAuthorize("hasAnyRole('CONDUCTOR', 'OPERADOR', 'ADMIN')")
-    public ResponseEntity<TripEventResponse> report(@PathVariable UUID id, @Valid @RequestBody TripEventRequest request,
-                                                    Authentication authentication) {
-        TripEventResponse event = tripService.report(id, request.tipo(), request.descripcion(), request.detalle(),
-                CurrentUser.id(authentication), CurrentUser.hasRole(authentication, "ADMIN"),
-                CurrentUser.hasRole(authentication, "CONDUCTOR"), CurrentUser.companyId(authentication), "USUARIO");
-        return ResponseEntity.status(HttpStatus.CREATED).body(event);
+    public ResponseEntity<Object> report(@PathVariable UUID id, @Valid @RequestBody TripEventRequest request,
+                                         Authentication authentication) {
+        TripService.Reportante quien = new TripService.Reportante(CurrentUser.id(authentication),
+                CurrentUser.isAdmin(authentication), CurrentUser.isConductor(authentication),
+                CurrentUser.companyId(authentication));
+        if (request.tipo() == TripEventType.SOS) {
+            tripService.autorizarReporte(id, quien);
+            TripAlertService.SosResult sos = alertService.sosDelViaje(id, request.lat(), request.lng(),
+                    request.descripcion(), quien.userId());
+            return ResponseEntity.status(sos.nueva() ? HttpStatus.CREATED : HttpStatus.OK).body(sos.alerta());
+        }
+        return ResponseEntity.status(HttpStatus.CREATED).body(tripService.report(id, request, quien));
     }
 
     @GetMapping("/trips/{id}/timeline")
