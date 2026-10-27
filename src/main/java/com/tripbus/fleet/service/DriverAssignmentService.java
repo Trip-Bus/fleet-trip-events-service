@@ -22,6 +22,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -34,6 +35,7 @@ import java.util.UUID;
 public class DriverAssignmentService {
 
     static final String ROL_CONDUCTOR = "CONDUCTOR";
+    private static final String ITINERARY_ID = "itineraryId";
 
     private final FleetItineraryRepository itineraryRepository;
     private final TripAssignmentRepository assignmentRepository;
@@ -86,15 +88,11 @@ public class DriverAssignmentService {
         // Cruces: con el lock del conductor, la verificación y la inserción son atómicas frente a
         // otras asignaciones del mismo conductor en otros viajes.
         lockConductor(conductorId);
-        assignmentRepository.findDelConductorEnVentana(conductorId,
-                        trackingWindow.end(itinerary).plus(trackingWindow.before()),
-                        trackingWindow.start(itinerary).minus(trackingWindow.after()))
-                .stream().findFirst()
-                .ifPresent(choque -> {
-                    throw new ApiException(HttpStatus.CONFLICT, "DRIVER_SCHEDULE_CONFLICT",
-                            "El conductor ya tiene un viaje asignado que se cruza con este",
-                            Map.of("itineraryId", choque.getItinerary().getItineraryId()));
-                });
+        cruce(conductorId, itinerary, null).ifPresent(choque -> {
+            throw new ApiException(HttpStatus.CONFLICT, "DRIVER_SCHEDULE_CONFLICT",
+                    "El conductor ya tiene un viaje asignado que se cruza con este",
+                    Map.of(ITINERARY_ID, choque));
+        });
 
         Instant now = clock.instant();
         TripAssignment assignment;
@@ -148,6 +146,40 @@ public class DriverAssignmentService {
         }
     }
 
+    /**
+     * HT-16 (ItineraryRescheduled): con las fechas nuevas, cada conductor del viaje debe seguir sin
+     * cruces (misma regla de US-121). Si choca, se le quita la asignación y se publica
+     * DriverAssignmentConflict (y DriverUnassigned) para que el operador asigne otro. Requiere transacción.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void revisarCruces(FleetItinerary itinerary) {
+        for (TripAssignment assignment : assignmentRepository.findByViaje(itinerary.getItineraryId())) {
+            UUID conductorId = assignment.getConductorId();
+            lockConductor(conductorId);
+            cruce(conductorId, itinerary, itinerary.getItineraryId()).ifPresent(choque -> {
+                assignmentRepository.delete(assignment);
+                Map<String, Object> conflicto = new LinkedHashMap<>();
+                conflicto.put(ITINERARY_ID, itinerary.getItineraryId());
+                conflicto.put("companyId", itinerary.getCompanyId());
+                conflicto.put("conductorId", conductorId);
+                conflicto.put("conflictoCon", choque);
+                outbox.add(FleetEvents.DRIVER_ASSIGNMENT_CONFLICT, conflicto);
+                outbox.add(FleetEvents.DRIVER_UNASSIGNED, payload(itinerary, conductorId, assignment.getRol()));
+            });
+        }
+    }
+
+    /** Primer viaje del conductor (no cancelado, distinto de excluir) cuya ventana se cruza con la de este. */
+    private Optional<UUID> cruce(UUID conductorId, FleetItinerary itinerary, UUID excluir) {
+        return assignmentRepository.findDelConductorEnVentana(conductorId,
+                        trackingWindow.end(itinerary).plus(trackingWindow.before()),
+                        trackingWindow.start(itinerary).minus(trackingWindow.after()))
+                .stream()
+                .map(a -> a.getItinerary().getItineraryId())
+                .filter(id -> !id.equals(excluir))
+                .findFirst();
+    }
+
     static ApiException notAssigned() {
         return ApiException.forbidden("NOT_ASSIGNED", "El conductor no está asignado a este viaje");
     }
@@ -194,7 +226,7 @@ public class DriverAssignmentService {
 
     private static Map<String, Object> payload(FleetItinerary itinerary, UUID conductorId, DriverRole rol) {
         Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("itineraryId", itinerary.getItineraryId());
+        payload.put(ITINERARY_ID, itinerary.getItineraryId());
         payload.put("companyId", itinerary.getCompanyId());
         payload.put("conductorId", conductorId);
         payload.put("rol", rol.name());

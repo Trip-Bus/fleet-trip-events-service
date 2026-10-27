@@ -7,7 +7,7 @@ parada, retraso, desvío, fin). Incluye el **simulador GPS** del MVP.
 
 **Stack:** Java 21 · Spring Boot 3.5.16 · PostgreSQL 16 · Redis 7
 
-**HU:** US-038, US-039, US-046, US-047, US-121, US-170, US-173, US-174, US-175 · **Puerto:** 18005 · **BD:** `tripbus_fleet` (puerto QA 18105)
+**HU:** US-038, US-039, US-046, US-047, US-121, US-170, US-171, US-173, US-174, US-175, US-176, HT-16 · **Puerto:** 18005 · **BD:** `tripbus_fleet` (puerto QA 18105)
 
 ## API
 
@@ -20,12 +20,19 @@ parada, retraso, desvío, fin). Incluye el **simulador GPS** del MVP.
 | POST | `/telemetry/position` | Ingesta GPS manual, **solo ADMIN** (pruebas). Responde 202: se encola en `tripbus:telemetry` y un consumidor independiente la procesa. |
 | GET | `/buses/{id}/position` | **Deprecado (se retira en el Sprint 5):** usar `/itineraries/{id}/bus-position`. Última posición conocida (Redis). Pública, solo si el bus tiene un viaje en ventana activa; si no, 404 `NO_ACTIVE_TRIP`. |
 | GET | `/itineraries/{id}/bus-position` | Dónde va mi bus: estado + paradas para el mapa y la posición (en `null` fuera de la ventana activa o si está cancelado), más `estadoRastreo` y `ultimaPosicionEn` (US-174; `null` si nunca se encendió). Pública. |
-| POST | `/trips/{id}/events` `{tipo, descripcion, detalle}` | Novedad del viaje (operador **de la misma empresa**, o ADMIN). Un CONDUCTOR, además, debe estar **asignado** al viaje (si no, 403 `NOT_ASSIGNED`). |
+| POST | `/trips/{id}/events` `{tipo, descripcion, detalle, lat, lng, puedeContinuar}` | Novedad del viaje (operador **de la misma empresa**, o ADMIN). Un CONDUCTOR, además, debe estar **asignado** al viaje (si no, 403 `NOT_ASSIGNED`). US-176: las graves crean una alerta; `SOS` no va a la línea de tiempo y responde la alerta (201 nueva, 200 si ya había una abierta). Ver [tipos de novedad](#tipos-de-novedad-post-tripsidevents). |
+| POST | `/driver/trips/{itineraryId}/start` `{checklist, observacion}` | US-171 (CONDUCTOR asignado): inicia el viaje. Solo dentro de la ventana (409 `OUTSIDE_TRACKING_WINDOW`), con todos los ítems de `tripbus.fleet.checklist-items` en `true` (400 `CHECKLIST_INCOMPLETE` con `details.faltantes`) y una sola vez (409 `TRIP_ALREADY_STARTED`). Registra `INICIO` (sin duplicar la del simulador) y enciende el rastreo (`ACTIVO`). Responde `{itineraryId, iniciadoEn, finalizadoEn, estadoRastreo}`. |
+| POST | `/driver/trips/{itineraryId}/finish` | US-171 (CONDUCTOR asignado): finaliza el viaje si ya inició (409 `TRIP_NOT_STARTED` / `TRIP_ALREADY_FINISHED`). Registra `FIN` y el rastreo pasa a `FINALIZADO`. |
+| POST | `/trips/{itineraryId}/finish` | US-171: fin forzado por el OPERADOR de la empresa (otra empresa: 404) o un ADMIN. Misma lógica. |
+| POST | `/driver/sos` `{lat, lng, mensaje}` | US-176 (CONDUCTOR): botón SOS de un toque sobre su viaje activo (409 `NO_ACTIVE_TRIP` / `OUTSIDE_TRACKING_WINDOW`). Una sola alerta SOS abierta por viaje: si se repite, 200 con la misma; si es nueva, 201. Nunca va a la línea de tiempo pública. Sin `lat`/`lng` usa la última posición del viaje. |
+| GET | `/trips/{id}/alerts` | US-176: alertas del viaje, las más recientes primero. OPERADOR de la empresa (otra empresa: 404) o ADMIN. |
+| POST | `/trips/{id}/alerts/{alertId}/resolve` `{nota}` | US-176: pasa la alerta a `RESUELTA` y publica `TripAlertResolved`. OPERADOR de la empresa o ADMIN; alerta de otra empresa u otro viaje: 404 `ALERT_NOT_FOUND`; ya resuelta: 409 `ALERT_ALREADY_RESOLVED`. |
+| GET | `/alerts?estado=ABIERTA\|RESUELTA` | US-176: alertas de la empresa del operador (un ADMIN ve todas), hasta 200, las más recientes primero. Sin `estado`: todas. |
 | GET | `/trips/{id}/timeline` | Línea de tiempo de novedades. Pública. |
 | PUT | `/trips/{itineraryId}/driver` `{conductorId, rol}` | US-121: asigna o reemplaza el conductor del rol (`PRINCIPAL` por defecto, o `RELEVO`). OPERADOR de la empresa del viaje o ADMIN. |
 | DELETE | `/trips/{itineraryId}/driver/{rol}` | US-121: quita la asignación (204; 404 `ASSIGNMENT_NOT_FOUND` si no hay). OPERADOR de la empresa o ADMIN. |
 | GET | `/trips/{itineraryId}/driver` | US-121: conductores asignados. OPERADOR de la empresa, ADMIN o un conductor asignado al viaje. |
-| GET | `/driver/trips?fecha=YYYY-MM-DD` | US-170 (CONDUCTOR): mis viajes del día (por defecto hoy en `America/Bogota`) ordenados por salida, con `rol`, `estado`, `ventanaInicio`/`ventanaFin` y `puedeCompartirUbicacion`. |
+| GET | `/driver/trips?fecha=YYYY-MM-DD` | US-170 (CONDUCTOR): mis viajes del día (por defecto hoy en `America/Bogota`) ordenados por salida, con `rol`, `estado`, `ventanaInicio`/`ventanaFin`, `puedeCompartirUbicacion` e `iniciado`/`finalizado` (US-171). |
 | GET | `/driver/trips/active` | US-170 (CONDUCTOR): el viaje asignado que está ahora en su ventana de rastreo, o 404 `NO_ACTIVE_TRIP`. |
 
 **Asignación de conductores (US-121):** máximo un `PRINCIPAL` y un `RELEVO` por viaje (tabla
@@ -48,7 +55,9 @@ parada, retraso, desvío, fin). Incluye el **simulador GPS** del MVP.
 `fechaSalida - 30 min` a `fechaLlegada + 30 min` (`tripbus.fleet.tracking-window-before` / `-after`)
 y nunca aplica si está cancelado. Fuera de ella la posición se guarda en `bus_positions` (auditoría)
 pero no se expone ni se publica `PositionUpdated`. Estado: `CANCELADO` > `FINALIZADO` (después de
-`fechaLlegada`) > `PROGRAMADO` > `SIN_SENAL` > `EN_RUTA`.
+`fechaLlegada`) > `PROGRAMADO` > `SIN_SENAL` > `EN_RUTA`. US-171: si el conductor marcó inicio o fin,
+mandan esos datos: `FINALIZADO` tras el fin y `EN_RUTA` tras el inicio, aunque no haya llegado la hora
+estimada (sin ellos, por ejemplo con el simulador, sigue el cálculo por horario).
 
 ### Rastreo con el celular del conductor (US-173 a US-175)
 
@@ -93,10 +102,33 @@ el cambio y un *relay* los publica (`FOR UPDATE SKIP LOCKED`, seguro con varias 
 | `TrackingStatusChanged` | US-174: cambia el estado de rastreo del viaje | `{itineraryId, busId, companyId, estado, ultimaPosicionEn}` |
 | `TripEventReported` | Novedad del viaje | `{tripEventId, itineraryId, busId, tipo, descripcion, payload, timestamp}` |
 | `DriverAssigned` | US-121: se asigna un conductor (también al reemplazar) | `{itineraryId, companyId, conductorId, rol}` |
-| `DriverUnassigned` | US-121: se quita, se reemplaza o se cancela el viaje | `{itineraryId, companyId, conductorId, rol}` |
+| `DriverUnassigned` | US-121: se quita, se reemplaza o se cancela el viaje (también al quitarla por un cruce tras reprogramar) | `{itineraryId, companyId, conductorId, rol}` |
+| `DriverAssignmentConflict` | HT-16: tras `ItineraryRescheduled` el conductor queda con un cruce de horario; se le quita la asignación para que el operador asigne otro | `{itineraryId, companyId, conductorId, conflictoCon}` |
+| `TripAlertRaised` | US-176: novedad grave (`AVERIA`, `ACCIDENTE`, `VIA_CERRADA`) o SOS. Para el tópico **privado** de la empresa; sin datos del conductor | `{alertId, itineraryId, companyId, busId, tipo, gravedad, lat, lng, mensaje, puedeContinuar}` |
+| `TripAlertResolved` | US-176: el operador resuelve la alerta | `{alertId, itineraryId, companyId, busId, tipo, nota, resueltoEn}` |
+| `TripInterrupted` | US-176: la novedad trae `puedeContinuar: false`. El operador decide en catalog si reprograma o cancela (no es automático) | `{itineraryId, companyId, tipo}` |
 
-**Consume:** `ItineraryPublished` (bus ↔ itinerario), `ItineraryCancelled` (marca el viaje y quita
-sus conductores).
+**Consume** (de catalog; idempotente por `eventId` con `processed_events`):
+
+| Evento | Efecto |
+|---|---|
+| `ItineraryPublished` | Crea el viaje (bus ↔ itinerario). |
+| `ItineraryCancelled` | Marca el viaje cancelado y quita sus conductores. |
+| `ItineraryRescheduled` `{itineraryId, fechaSalida, fechaLlegada}` | HT-16: actualiza las fechas (la ventana de rastreo se mueve sola). Si un conductor asignado queda con un cruce (regla de US-121), se le quita la asignación y se publica `DriverAssignmentConflict`. |
+| `ItineraryBusChanged` `{itineraryId, busNuevo}` | HT-16: cambia el bus; la sesión de rastreo y las asignaciones se mantienen. |
+| `RouteCreated` / `RouteUpdated` `{routeId, paradas}` | HT-16: reemplaza las paradas de la ruta en `route_stops` (la copia local que usa el mapa). |
+
+### Tipos de novedad (`POST /trips/{id}/events`)
+
+| Tipo | Gravedad | Línea de tiempo pública | Alerta al operador |
+|---|---|---|---|
+| `INICIO`, `LLEGADA_PARADA`, `RETRASO`, `DESVIO`, `FIN` | `NORMAL` | ✔ | — |
+| `AVERIA`, `VIA_CERRADA` | `ALTA` | ✔ (sin datos del conductor) | ✔ |
+| `ACCIDENTE` | `CRITICA` | ✔ (sin datos del conductor) | ✔ |
+| `SOS` | `CRITICA` | **nunca** | ✔ (una sola abierta por viaje) |
+
+`lat`/`lng` son opcionales: si no vienen se usa la última posición del viaje. Con `puedeContinuar: false`
+se publica además `TripInterrupted`.
 
 ## Simulador GPS
 
@@ -264,6 +296,9 @@ mvn -B verify      # unitarias + integración con PostgreSQL y Redis reales (Tes
 - `DriverTrackingIT`: ubicación del conductor y estados de rastreo con PostgreSQL y Redis reales
   (conductor no asignado, fuera de ventana, pausa, lote desordenado, precisión mala, salto imposible,
   paso a `SIN_SENAL` y a `FINALIZADO` con el job, y que `PositionUpdated` no lleve `conductorId`).
+- `TripOperationIT`: sincronización con catalog (rutas, reprogramación con conflicto de conductor,
+  cambio de bus), inicio y fin del viaje (checklist incompleto, doble inicio, fin forzado) y alertas
+  (novedades graves, SOS repetido y fuera de la línea de tiempo, alerta de otra empresa: 404).
 
 Toda la plataforma: ver el README de **API-gateway**.
 
@@ -281,10 +316,10 @@ Toda la plataforma: ver el README de **API-gateway**.
 `mvn verify` falla si la cobertura total baja de los mínimos del `pom.xml`, en **todas** las ramas
 (también en `main`, donde Sonar no corre):
 
-| Métrica | Medido (2026-10-22) | Mínimo |
+| Métrica | Medido (2026-10-26) | Mínimo |
 |---|---|---|
-| Líneas | 83,7 % | `jacoco.minimo.lineas` = 0.80 |
-| Ramas | 77,9 % | `jacoco.minimo.ramas` = 0.70 |
+| Líneas | 86,8 % | `jacoco.minimo.lineas` = 0.85 |
+| Ramas | 82,6 % | `jacoco.minimo.ramas` = 0.80 |
 
 **La cobertura nunca puede bajar: si agregas pruebas, sube el mínimo.** Corre `mvn verify`, mira
 el total en `target/site/jacoco/index.html` (o la tabla del CI), redondéalo hacia abajo al 5 % y

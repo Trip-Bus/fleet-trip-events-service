@@ -44,14 +44,14 @@ public class DriverController {
                                            Authentication authentication) {
         DriverRole rol = request.rol() != null ? request.rol() : DriverRole.PRINCIPAL;
         return assignmentService.assign(itineraryId, request.conductorId(), rol, CurrentUser.id(authentication),
-                CurrentUser.hasRole(authentication, "ADMIN"), CurrentUser.companyId(authentication));
+                CurrentUser.isAdmin(authentication), CurrentUser.companyId(authentication));
     }
 
     @DeleteMapping("/trips/{itineraryId}/driver/{rol}")
     @PreAuthorize("hasAnyRole('OPERADOR', 'ADMIN')")
     public ResponseEntity<Void> unassign(@PathVariable UUID itineraryId, @PathVariable DriverRole rol,
                                          Authentication authentication) {
-        assignmentService.unassign(itineraryId, rol, CurrentUser.hasRole(authentication, "ADMIN"),
+        assignmentService.unassign(itineraryId, rol, CurrentUser.isAdmin(authentication),
                 CurrentUser.companyId(authentication));
         return ResponseEntity.noContent().build();
     }
@@ -60,7 +60,7 @@ public class DriverController {
     @PreAuthorize("hasAnyRole('OPERADOR', 'ADMIN', 'CONDUCTOR')")
     public List<DriverAssignmentResponse> assigned(@PathVariable UUID itineraryId, Authentication authentication) {
         return assignmentService.assigned(itineraryId, CurrentUser.id(authentication),
-                CurrentUser.hasRole(authentication, "ADMIN"), CurrentUser.hasRole(authentication, "CONDUCTOR"),
+                CurrentUser.isAdmin(authentication), CurrentUser.isConductor(authentication),
                 CurrentUser.companyId(authentication));
     }
 

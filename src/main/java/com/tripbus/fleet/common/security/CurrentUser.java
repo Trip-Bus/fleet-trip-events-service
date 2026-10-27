@@ -35,6 +35,14 @@ public final class CurrentUser {
         return null;
     }
 
+    public static boolean isAdmin(Authentication authentication) {
+        return hasRole(authentication, "ADMIN");
+    }
+
+    public static boolean isConductor(Authentication authentication) {
+        return hasRole(authentication, "CONDUCTOR");
+    }
+
     public static boolean hasRole(Authentication authentication, String role) {
         return authentication != null && authentication.getAuthorities().stream()
                 .anyMatch(a -> a.getAuthority().equals("ROLE_" + role));
