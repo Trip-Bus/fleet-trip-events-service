@@ -115,7 +115,7 @@ public class TripAnalysisService {
         EtaView view = new EtaView(itinerary.getItineraryId(), eta.retrasoMinutos(), position.timestamp(),
                 eta.paradas());
         etaStore.save(view);
-        publicarSiCambio(view);
+        publicarSiCambio(view, itinerary.getCompanyId());
 
         if (!eta.todasAlcanzadas()) {
             detectarRetraso(itinerary, eta.retrasoMinutos());
@@ -211,7 +211,7 @@ public class TripAnalysisService {
      * EtaUpdated solo si alguna ETA cambió 1 minuto o más (o una parada pasó a alcanzada) respecto a la
      * última publicada, y como máximo una vez por tripbus.fleet.eta-publish-interval por viaje.
      */
-    private void publicarSiCambio(EtaView view) {
+    private void publicarSiCambio(EtaView view, UUID companyId) {
         String keyEstimadas = key(view.itineraryId(), "eta-publicada");
         String keyEn = key(view.itineraryId(), "eta-publicada-en");
         Map<String, Long> actuales = estimadas(view);
@@ -226,6 +226,8 @@ public class TripAnalysisService {
         }
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("itineraryId", view.itineraryId());
+        // US-178: para el mapa de la flota del operador.
+        payload.put("companyId", companyId);
         payload.put("retrasoMinutos", view.retrasoMinutos());
         payload.put("paradas", view.paradas());
         outbox.add(FleetEvents.ETA_UPDATED, payload);

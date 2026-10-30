@@ -53,16 +53,15 @@ public class TrackingWindow {
     }
 
     /**
-     * ¿La posición pertenece a un viaje en ventana activa? Si trae itinerario se evalúa ese
+     * El viaje en ventana activa al que pertenece la posición, si hay. Si trae itinerario se evalúa ese
      * (y debe ser de ese bus); si no, cualquier itinerario del bus en ventana.
      */
-    public boolean isActivePosition(UUID busId, UUID itineraryId, Instant at) {
+    public Optional<FleetItinerary> activeForPosition(UUID busId, UUID itineraryId, Instant at) {
         if (itineraryId == null) {
-            return activeForBus(busId, at).isPresent();
+            return activeForBus(busId, at);
         }
         return itineraryRepository.findById(itineraryId)
                 .filter(it -> it.getBusId().equals(busId))
-                .filter(it -> isActive(it, at))
-                .isPresent();
+                .filter(it -> isActive(it, at));
     }
 }

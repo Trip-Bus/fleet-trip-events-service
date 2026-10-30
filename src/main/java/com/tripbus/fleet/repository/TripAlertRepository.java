@@ -5,6 +5,7 @@ import com.tripbus.fleet.domain.TripEventType;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -28,4 +29,7 @@ public interface TripAlertRepository extends JpaRepository<TripAlert, UUID> {
     List<TripAlert> findAllByOrderByCreadoEnDesc(Pageable pageable);
 
     List<TripAlert> findByEstadoOrderByCreadoEnDesc(TripAlert.Estado estado, Pageable pageable);
+
+    /** US-178: alertas en ese estado de un bloque de viajes (una sola consulta para todo el mapa). */
+    List<TripAlert> findByItineraryIdInAndEstado(Collection<UUID> itineraryIds, TripAlert.Estado estado);
 }

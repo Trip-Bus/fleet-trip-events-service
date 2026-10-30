@@ -37,4 +37,24 @@ public interface FleetItineraryRepository extends JpaRepository<FleetItinerary, 
             """)
     List<FleetItinerary> findEnVentana(@Param("busId") UUID busId, @Param("salidaHasta") Instant salidaHasta,
                                        @Param("llegadaDesde") Instant llegadaDesde);
+
+    /** US-178: viajes no cancelados de la empresa cuya ventana de rastreo contiene el instante consultado. */
+    @Query("""
+            select f from FleetItinerary f
+            where f.companyId = :companyId and f.cancelado = false
+              and f.fechaSalida <= :salidaHasta and f.fechaLlegada >= :llegadaDesde
+            order by f.fechaSalida
+            """)
+    List<FleetItinerary> findEnVentanaDeEmpresa(@Param("companyId") UUID companyId,
+                                                @Param("salidaHasta") Instant salidaHasta,
+                                                @Param("llegadaDesde") Instant llegadaDesde, Pageable pageable);
+
+    /** US-178: lo mismo para todas las empresas (ADMIN). */
+    @Query("""
+            select f from FleetItinerary f
+            where f.cancelado = false and f.fechaSalida <= :salidaHasta and f.fechaLlegada >= :llegadaDesde
+            order by f.fechaSalida
+            """)
+    List<FleetItinerary> findEnVentanaTodas(@Param("salidaHasta") Instant salidaHasta,
+                                            @Param("llegadaDesde") Instant llegadaDesde, Pageable pageable);
 }

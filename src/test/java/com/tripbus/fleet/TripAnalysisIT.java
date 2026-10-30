@@ -275,7 +275,8 @@ class TripAnalysisIT {
         assertThat(outbox("EtaUpdated", viaje)).isEqualTo(2L);
         JsonNode eta = json(jdbc.queryForObject("select payload from outbox where event_type = 'EtaUpdated' "
                 + "and payload like ? order by creado_en desc limit 1", String.class, "%" + viaje.itineraryId() + "%"));
-        assertThat(eta.fieldNames()).toIterable().containsExactly("itineraryId", "retrasoMinutos", "paradas");
+        assertThat(eta.fieldNames()).toIterable().containsExactly("itineraryId", "companyId", "retrasoMinutos",
+                "paradas");
         assertThat(eta.path("paradas").get(0).fieldNames()).toIterable()
                 .containsExactly("orden", "nombre", "programada", "estimada", "alcanzada");
 

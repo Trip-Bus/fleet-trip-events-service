@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -18,6 +19,11 @@ public interface TripAssignmentRepository extends JpaRepository<TripAssignment, 
 
     @Query("select a from TripAssignment a where a.itinerary.itineraryId = :itineraryId order by a.rol")
     List<TripAssignment> findByViaje(@Param("itineraryId") UUID itineraryId);
+
+    /** US-178: el conductor de ese rol de un bloque de viajes (una sola consulta para todo el mapa). */
+    @Query("select a from TripAssignment a where a.itinerary.itineraryId in :itineraryIds and a.rol = :rol")
+    List<TripAssignment> findByViajesYRol(@Param("itineraryIds") Collection<UUID> itineraryIds,
+                                          @Param("rol") DriverRole rol);
 
     @Query("""
             select count(a) > 0 from TripAssignment a

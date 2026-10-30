@@ -158,12 +158,15 @@ public class TelemetryService {
             }
         });
         // US-039/US-047: fuera de un viaje en ventana activa la posición solo queda para auditoría.
-        if (!trackingWindow.isActivePosition(busId, itineraryId, view.timestamp())) {
+        Optional<FleetItinerary> viaje = trackingWindow.activeForPosition(busId, itineraryId, view.timestamp());
+        if (viaje.isEmpty()) {
             return;
         }
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("busId", busId);
         payload.put("itineraryId", itineraryId);
+        // US-178: para el mapa de la flota del operador (nunca conductorId ni otros datos personales).
+        payload.put("companyId", viaje.get().getCompanyId());
         payload.put("lat", view.lat());
         payload.put("lng", view.lng());
         payload.put("velocidad", view.velocidad());
