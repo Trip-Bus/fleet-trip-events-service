@@ -7,7 +7,7 @@ parada, retraso, desvío, fin). Incluye el **simulador GPS** del MVP.
 
 **Stack:** Java 21 · Spring Boot 3.5.16 · PostgreSQL 16 · Redis 7
 
-**HU:** US-038, US-039, US-046, US-047, US-121, US-170, US-171, US-173, US-174, US-175, US-176, US-177, US-180, HT-16 · **Puerto:** 18005 · **BD:** `tripbus_fleet` (puerto QA 18105)
+**HU:** US-038, US-039, US-046, US-047, US-121, US-170, US-171, US-173, US-174, US-175, US-176, US-177, US-178, US-180, HT-16 · **Puerto:** 18005 · **BD:** `tripbus_fleet` (puerto QA 18105)
 
 ## API
 
@@ -28,6 +28,7 @@ parada, retraso, desvío, fin). Incluye el **simulador GPS** del MVP.
 | POST | `/driver/sos` `{lat, lng, mensaje}` | US-176 (CONDUCTOR): botón SOS de un toque sobre su viaje activo (409 `NO_ACTIVE_TRIP` / `OUTSIDE_TRACKING_WINDOW`). Una sola alerta SOS abierta por viaje: si se repite, 200 con la misma; si es nueva, 201. Nunca va a la línea de tiempo pública. Sin `lat`/`lng` usa la última posición del viaje. |
 | GET | `/trips/{id}/alerts` | US-176: alertas del viaje, las más recientes primero. OPERADOR de la empresa (otra empresa: 404) o ADMIN. |
 | POST | `/trips/{id}/alerts/{alertId}/resolve` `{nota}` | US-176: pasa la alerta a `RESUELTA` y publica `TripAlertResolved`. OPERADOR de la empresa o ADMIN; alerta de otra empresa u otro viaje: 404 `ALERT_NOT_FOUND`; ya resuelta: 409 `ALERT_ALREADY_RESOLVED`. |
+| GET | `/fleet/live?companyId=` | US-178: mapa de la flota. OPERADOR: los viajes de su empresa (el `companyId` de la consulta se ignora); ADMIN: la empresa de `companyId` o, sin él, todas. Ver [mapa de la flota](#mapa-de-la-flota-us-178). |
 | GET | `/alerts?estado=ABIERTA\|RESUELTA` | US-176: alertas de la empresa del operador (un ADMIN ve todas), hasta 200, las más recientes primero. Sin `estado`: todas. |
 | GET | `/trips/{id}/timeline` | Línea de tiempo de novedades. Pública. |
 | PUT | `/trips/{itineraryId}/driver` `{conductorId, rol}` | US-121: asigna o reemplaza el conductor del rol (`PRINCIPAL` por defecto, o `RELEVO`). OPERADOR de la empresa del viaje o ADMIN. |
@@ -92,6 +93,41 @@ El job `TrackingStatusJob` corre cada 15 s (`tripbus.jobs.tracking-status-ms`) e
 (`LeaderLock`) y hace los pasos a `SIN_SENAL` y `FINALIZADO`. Cada cambio de estado publica
 `TrackingStatusChanged` por el outbox en la misma transacción.
 
+### Mapa de la flota (US-178)
+
+`GET /fleet/live` devuelve los viajes de la empresa que están **ahora** dentro de su ventana de rastreo
+y no cancelados (máximo 300, por `fechaSalida`), con un resumen arriba:
+
+```json
+{
+  "generadoEn": "2026-10-29T15:00:00Z",
+  "resumen": {"total": 4, "enRuta": 1, "activos": 1, "enPausa": 1, "sinSenal": 1, "retrasados": 1, "conAlerta": 2},
+  "viajes": [{
+    "itineraryId": "…", "busId": "…", "origen": "Bogotá", "destino": "Tunja",
+    "fechaSalida": "…", "fechaLlegada": "…", "iniciado": true, "finalizado": false,
+    "estadoRastreo": "ACTIVO",
+    "posicion": {"lat": 4.66, "lng": -74.10, "velocidad": 35.5, "rumbo": 45.0, "timestamp": "…"},
+    "retrasoMinutos": 20,
+    "siguienteParada": {"orden": 2, "nombre": "Chocontá", "programada": "…", "estimada": "…"},
+    "ultimaParadaAlcanzada": {"orden": 1, "nombre": "Bogotá", "programada": "…", "estimada": null},
+    "alertas": {"abiertas": 2, "mayorGravedad": "CRITICA"},
+    "conductor": {"conductorId": "…", "nombre": "Ana"}
+  }]
+}
+```
+
+- `enRuta`: iniciados y no finalizados; `activos`/`enPausa`/`sinSenal`: por estado de rastreo;
+  `retrasados`: más de `delay-threshold-min` (10) minutos; `conAlerta`: con alguna alerta `ABIERTA`.
+- `estadoRastreo` es `null` si el viaje aún no tiene sesión; `posicion`, `retrasoMinutos` y las paradas
+  son `null` mientras no haya posición o ETA en Redis; `conductor` es el `PRINCIPAL` (o `null`).
+- Pocas consultas sin importar cuántos viajes haya: una de viajes, una de sesiones, una de alertas
+  abiertas, una de conductores y **un solo `MGET`** en Redis con `fleet:itinerary:{id}:last` y
+  `fleet:itinerary:{id}:eta` de todos. Si Redis falla, el mapa carga sin posiciones.
+- El nombre del conductor sale de identity (`GET /internal/users/{id}`) con caché en memoria de 10 min.
+  Si identity no responde, `nombre` es `null`, el mapa carga igual y durante 30 s no se vuelve a llamar.
+- El tiempo real del mapa lo dan `PositionUpdated`, `EtaUpdated` y `TrackingStatusChanged`, que traen
+  `companyId` (nunca datos del conductor).
+
 **Transactional outbox**: los eventos se guardan en la tabla `outbox` en la misma transacción que
 el cambio y un *relay* los publica (`FOR UPDATE SKIP LOCKED`, seguro con varias réplicas).
 
@@ -99,7 +135,7 @@ el cambio y un *relay* los publica (`FOR UPDATE SKIP LOCKED`, seguro con varias 
 
 | Evento | Cuándo | Payload |
 |---|---|---|
-| `PositionUpdated` | Posición GPS de un viaje en ventana activa (sin `conductorId`: es público) | `{busId, itineraryId, lat, lng, velocidad, rumbo, timestamp}` |
+| `PositionUpdated` | Posición GPS de un viaje en ventana activa (sin `conductorId`: es público). US-178: con `companyId` para el mapa de la flota | `{busId, itineraryId, companyId, lat, lng, velocidad, rumbo, timestamp}` |
 | `TrackingStatusChanged` | US-174: cambia el estado de rastreo del viaje | `{itineraryId, busId, companyId, estado, ultimaPosicionEn}` |
 | `TripEventReported` | Novedad del viaje | `{tripEventId, itineraryId, busId, tipo, descripcion, payload, timestamp}` |
 | `DriverAssigned` | US-121: se asigna un conductor (también al reemplazar) | `{itineraryId, companyId, conductorId, rol}` |
@@ -108,7 +144,7 @@ el cambio y un *relay* los publica (`FOR UPDATE SKIP LOCKED`, seguro con varias 
 | `TripAlertRaised` | US-176: novedad grave (`AVERIA`, `ACCIDENTE`, `VIA_CERRADA`) o SOS. Para el tópico **privado** de la empresa; sin datos del conductor | `{alertId, itineraryId, companyId, busId, tipo, gravedad, lat, lng, mensaje, puedeContinuar}` |
 | `TripAlertResolved` | US-176: el operador resuelve la alerta | `{alertId, itineraryId, companyId, busId, tipo, nota, resueltoEn}` |
 | `TripInterrupted` | US-176: la novedad trae `puedeContinuar: false`. El operador decide en catalog si reprograma o cancela (no es automático) | `{itineraryId, companyId, tipo}` |
-| `EtaUpdated` | US-180: alguna ETA cambió 1 minuto o más; como máximo una vez cada 30 s por viaje | `{itineraryId, retrasoMinutos, paradas: [{orden, nombre, programada, estimada, alcanzada}]}` |
+| `EtaUpdated` | US-180: alguna ETA cambió 1 minuto o más; como máximo una vez cada 30 s por viaje. US-178: con `companyId` para el mapa de la flota | `{itineraryId, companyId, retrasoMinutos, paradas: [{orden, nombre, programada, estimada, alcanzada}]}` |
 
 `TripEventReported` sale también para las novedades automáticas (`LLEGADA_PARADA`, `RETRASO`, `DESVIO`)
 y `TripAlertRaised` para el desvío detectado (gravedad `ALTA`).
@@ -349,6 +385,10 @@ mvn -B verify      # unitarias + integración con PostgreSQL y Redis reales (Tes
   Tunja (llegada a cada parada, retraso que se repite al crecer 15 min, desvío con una sola alerta, ETA y
   límite de `EtaUpdated`), sin duplicados con el simulador. `GeoTest` y `EtaCalculatorTest`: geometría y
   cálculo del ETA con instantes fijos.
+- `FleetLiveIT`: mapa de la flota con viajes en varios estados (fuera de la ventana y cancelado no
+  aparecen), operador que no ve otra empresa, ADMIN con y sin `companyId`, identity caído (nombre
+  `null`) y `companyId` en `PositionUpdated` y `EtaUpdated`. `FleetLiveServiceTest` y
+  `DriverNameCacheTest`: resumen, Redis caído y caché de nombres.
 
 Toda la plataforma: ver el README de **API-gateway**.
 
@@ -366,10 +406,10 @@ Toda la plataforma: ver el README de **API-gateway**.
 `mvn verify` falla si la cobertura total baja de los mínimos del `pom.xml`, en **todas** las ramas
 (también en `main`, donde Sonar no corre):
 
-| Métrica | Medido (2026-10-26) | Mínimo |
+| Métrica | Medido (2026-10-29) | Mínimo |
 |---|---|---|
-| Líneas | 88,5 % | `jacoco.minimo.lineas` = 0.85 |
-| Ramas | 85,8 % | `jacoco.minimo.ramas` = 0.80 |
+| Líneas | 89,4 % | `jacoco.minimo.lineas` = 0.85 |
+| Ramas | 86,9 % | `jacoco.minimo.ramas` = 0.85 |
 
 **La cobertura nunca puede bajar: si agregas pruebas, sube el mínimo.** Corre `mvn verify`, mira
 el total en `target/site/jacoco/index.html` (o la tabla del CI), redondéalo hacia abajo al 5 % y
