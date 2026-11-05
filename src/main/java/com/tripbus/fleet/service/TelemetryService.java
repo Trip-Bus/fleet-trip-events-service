@@ -2,6 +2,8 @@ package com.tripbus.fleet.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tripbus.fleet.common.error.ApiException;
+import com.tripbus.fleet.common.observability.FleetMetrics;
+import com.tripbus.fleet.common.observability.TracePropagation;
 import com.tripbus.fleet.config.FleetProperties;
 import com.tripbus.fleet.domain.BusPosition;
 import com.tripbus.fleet.events.FleetEvents;
@@ -48,13 +50,18 @@ public class TelemetryService {
     private final TrackingWindow trackingWindow;
     private final Clock clock;
     private final ApplicationEventPublisher events;
+    private final TracePropagation tracing;
+    private final FleetMetrics metrics;
     private final java.util.concurrent.atomic.AtomicLong ingested = new java.util.concurrent.atomic.AtomicLong();
 
     public TelemetryService(StringRedisTemplate redis, BusPositionRepository positionRepository,
                             FleetItineraryRepository itineraryRepository, Outbox outbox,
                             ObjectMapper objectMapper, FleetProperties properties, TrackingWindow trackingWindow,
-                            Clock clock, ApplicationEventPublisher events) {
+                            Clock clock, ApplicationEventPublisher events,
+                            TracePropagation tracing, FleetMetrics metrics) {
         this.events = events;
+        this.tracing = tracing;
+        this.metrics = metrics;
         this.redis = redis;
         this.positionRepository = positionRepository;
         this.itineraryRepository = itineraryRepository;
@@ -86,15 +93,21 @@ public class TelemetryService {
         Instant timestamp = request.timestamp() != null ? request.timestamp() : now;
         // Validación mínima de GPS (US-040 completa está en el backlog).
         if (timestamp.isBefore(now.minus(properties.maxPositionAge()))) {
-            throw ApiException.badRequest("STALE_POSITION", "La posición es demasiado antigua y se descarta");
+            throw descartada("STALE_POSITION", "La posición es demasiado antigua y se descarta");
         }
         if (timestamp.isAfter(now.plus(Duration.ofMinutes(2)))) {
-            throw ApiException.badRequest("FUTURE_POSITION", "La posición tiene una fecha futura");
+            throw descartada("FUTURE_POSITION", "La posición tiene una fecha futura");
         }
         if (request.lat() == 0.0 && request.lng() == 0.0) {
-            throw ApiException.badRequest("INVALID_COORDINATES", "Coordenadas (0,0) inválidas");
+            throw descartada("INVALID_COORDINATES", "Coordenadas (0,0) inválidas");
         }
         return enqueue(request, timestamp, null, null);
+    }
+
+    /** HT-10: cuenta la posición descartada (tripbus_posiciones_total) y devuelve el 400. */
+    private ApiException descartada(String codigo, String mensaje) {
+        metrics.posicionDescartada(codigo);
+        return ApiException.badRequest(codigo, mensaje);
     }
 
     /**
@@ -124,14 +137,21 @@ public class TelemetryService {
             fields.put("rumbo", String.valueOf(request.rumbo()));
         }
         fields.put("timestamp", timestamp.toString());
+        // HT-10: el consumidor sigue la misma traza.
+        String traceparent = tracing.actual();
+        if (traceparent != null) {
+            fields.put(TracePropagation.CAMPO, traceparent);
+        }
         try {
             redis.opsForStream().add(StreamRecords.newRecord().in(properties.telemetryStream()).ofMap(fields));
             if (ingested.incrementAndGet() % 1000 == 0) {
                 redis.opsForStream().trim(properties.telemetryStream(), 100_000, true);
             }
         } catch (RuntimeException e) {
+            metrics.posicionDescartada("TELEMETRY_UNAVAILABLE");
             throw ApiException.unavailable("TELEMETRY_UNAVAILABLE", "No se pudo encolar la posición");
         }
+        metrics.posicionAceptada();
         return eventId;
     }
 
@@ -218,12 +238,5 @@ public class TelemetryService {
     static PositionResponse toView(BusPosition p) {
         return new PositionResponse(p.getBusId(), p.getItineraryId(), p.getLat(), p.getLng(), p.getVelocidad(),
                 p.getRumbo(), p.getRegistradoEn());
-    }
-
-    @org.springframework.scheduling.annotation.Scheduled(cron = "0 0 4 * * *", zone = "America/Bogota")
-    @Transactional
-    public void purgeOldPositions() {
-        int deleted = positionRepository.deleteOlderThan(clock.instant().minus(Duration.ofDays(7)));
-        log.info("Posiciones antiguas eliminadas: {}", deleted);
     }
 }

@@ -36,6 +36,9 @@ public class DriverAssignmentService {
 
     static final String ROL_CONDUCTOR = "CONDUCTOR";
     private static final String ITINERARY_ID = "itineraryId";
+    /** Motivos de DriverAssignmentConflict. */
+    static final String MOTIVO_CRUCE = "CRUCE_DE_HORARIO";
+    static final String MOTIVO_ELIMINADO = "CONDUCTOR_ELIMINADO";
 
     private final FleetItineraryRepository itineraryRepository;
     private final TripAssignmentRepository assignmentRepository;
@@ -156,17 +159,37 @@ public class DriverAssignmentService {
         for (TripAssignment assignment : assignmentRepository.findByViaje(itinerary.getItineraryId())) {
             UUID conductorId = assignment.getConductorId();
             lockConductor(conductorId);
-            cruce(conductorId, itinerary, itinerary.getItineraryId()).ifPresent(choque -> {
-                assignmentRepository.delete(assignment);
-                Map<String, Object> conflicto = new LinkedHashMap<>();
-                conflicto.put(ITINERARY_ID, itinerary.getItineraryId());
-                conflicto.put("companyId", itinerary.getCompanyId());
-                conflicto.put("conductorId", conductorId);
-                conflicto.put("conflictoCon", choque);
-                outbox.add(FleetEvents.DRIVER_ASSIGNMENT_CONFLICT, conflicto);
-                outbox.add(FleetEvents.DRIVER_UNASSIGNED, payload(itinerary, conductorId, assignment.getRol()));
-            });
+            cruce(conductorId, itinerary, itinerary.getItineraryId())
+                    .ifPresent(choque -> quitarPorConflicto(assignment, MOTIVO_CRUCE, choque));
         }
+    }
+
+    /**
+     * HT-10 (UserDeleted de identity): si el usuario eliminado era conductor, se le quitan sus asignaciones
+     * en viajes que aún no terminan y se publica DriverAssignmentConflict (y DriverUnassigned) para que el
+     * operador asigne otro. Devuelve cuántas quitó. Requiere transacción.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public int quitarConductorEliminado(UUID conductorId) {
+        lockConductor(conductorId);
+        List<TripAssignment> pendientes = assignmentRepository.findDelConductorPendientes(conductorId, clock.instant());
+        pendientes.forEach(assignment -> quitarPorConflicto(assignment, MOTIVO_ELIMINADO, null));
+        return pendientes.size();
+    }
+
+    private void quitarPorConflicto(TripAssignment assignment, String motivo, UUID conflictoCon) {
+        FleetItinerary itinerary = assignment.getItinerary();
+        UUID conductorId = assignment.getConductorId();
+        assignmentRepository.delete(assignment);
+        Map<String, Object> conflicto = new LinkedHashMap<>();
+        conflicto.put(ITINERARY_ID, itinerary.getItineraryId());
+        conflicto.put("companyId", itinerary.getCompanyId());
+        conflicto.put("conductorId", conductorId);
+        conflicto.put("rol", assignment.getRol().name());
+        conflicto.put("motivo", motivo);
+        conflicto.put("conflictoCon", conflictoCon);
+        outbox.add(FleetEvents.DRIVER_ASSIGNMENT_CONFLICT, conflicto);
+        outbox.add(FleetEvents.DRIVER_UNASSIGNED, payload(itinerary, conductorId, assignment.getRol()));
     }
 
     /** Primer viaje del conductor (no cancelado, distinto de excluir) cuya ventana se cruza con la de este. */

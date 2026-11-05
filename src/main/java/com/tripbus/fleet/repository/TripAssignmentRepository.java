@@ -46,6 +46,19 @@ public interface TripAssignmentRepository extends JpaRepository<TripAssignment, 
                                                    @Param("salidaHasta") Instant salidaHasta,
                                                    @Param("llegadaDesde") Instant llegadaDesde);
 
+    /**
+     * HT-10 (UserDeleted): asignaciones del conductor en viajes que aún no terminan (no cancelados, sin
+     * finalizar y con llegada después de ahora).
+     */
+    @Query("""
+            select a from TripAssignment a join fetch a.itinerary f
+            where a.conductorId = :conductorId and f.cancelado = false and f.finalizadoEn is null
+              and f.fechaLlegada > :now
+            order by f.fechaSalida
+            """)
+    List<TripAssignment> findDelConductorPendientes(@Param("conductorId") UUID conductorId,
+                                                    @Param("now") Instant now);
+
     /** US-170: viajes del conductor que salen en [desde, hasta). */
     @Query("""
             select a from TripAssignment a join fetch a.itinerary f

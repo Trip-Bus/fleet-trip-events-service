@@ -7,7 +7,7 @@ parada, retraso, desvío, fin). Incluye el **simulador GPS** del MVP.
 
 **Stack:** Java 21 · Spring Boot 3.5.16 · PostgreSQL 16 · Redis 7
 
-**HU:** US-038, US-039, US-046, US-047, US-121, US-170, US-171, US-173, US-174, US-175, US-176, US-177, US-178, US-180, HT-16 · **Puerto:** 18005 · **BD:** `tripbus_fleet` (puerto QA 18105)
+**HU:** US-038, US-039, US-046, US-047, US-121, US-170, US-171, US-173, US-174, US-175, US-176, US-177, US-178, US-180, US-181, US-182, US-193, HT-08, HT-10, HT-16 · **Puerto:** 18005 · **BD:** `tripbus_fleet` (puerto QA 18105)
 
 ## API
 
@@ -31,6 +31,10 @@ parada, retraso, desvío, fin). Incluye el **simulador GPS** del MVP.
 | GET | `/fleet/live?companyId=` | US-178: mapa de la flota. OPERADOR: los viajes de su empresa (el `companyId` de la consulta se ignora); ADMIN: la empresa de `companyId` o, sin él, todas. Ver [mapa de la flota](#mapa-de-la-flota-us-178). |
 | GET | `/alerts?estado=ABIERTA\|RESUELTA` | US-176: alertas de la empresa del operador (un ADMIN ve todas), hasta 200, las más recientes primero. Sin `estado`: todas. |
 | GET | `/trips/{id}/timeline` | Línea de tiempo de novedades. Pública. |
+| POST | `/share-links` `{itineraryId}` | US-181 (cualquier usuario autenticado): crea un enlace para compartir el viaje con un familiar. 201 `{codigo, itineraryId, venceEn}`. Ver [compartir mi viaje](#compartir-mi-viaje-us-181). |
+| GET | `/share/{codigo}` | US-181: pública. `{itineraryId, origen, destino, fechaSalida, venceEn}`; vencido o inexistente: 404 `SHARE_LINK_NOT_FOUND`. |
+| GET | `/itineraries/{id}/track` | US-182: pública, **solo viajes terminados** (finalizados o pasada su ventana de rastreo; no cancelados; si no, 404 `TRIP_NOT_FINISHED`). Recorrido (máximo un punto por minuto), paradas con hora programada y real y resumen de puntualidad. Ver [puntualidad](#puntualidad-us-182-us-193). |
+| GET | `/reports/punctuality?desde=&hasta=&agrupar=ruta\|conductor&companyId=` | US-193: OPERADOR (su empresa; el `companyId` se ignora) o ADMIN (`companyId` o, sin él, todas). Fechas `YYYY-MM-DD` (días de `America/Bogota` por salida programada), máximo 366 días. |
 | PUT | `/trips/{itineraryId}/driver` `{conductorId, rol}` | US-121: asigna o reemplaza el conductor del rol (`PRINCIPAL` por defecto, o `RELEVO`). OPERADOR de la empresa del viaje o ADMIN. |
 | DELETE | `/trips/{itineraryId}/driver/{rol}` | US-121: quita la asignación (204; 404 `ASSIGNMENT_NOT_FOUND` si no hay). OPERADOR de la empresa o ADMIN. |
 | GET | `/trips/{itineraryId}/driver` | US-121: conductores asignados. OPERADOR de la empresa, ADMIN o un conductor asignado al viaje. |
@@ -140,7 +144,7 @@ el cambio y un *relay* los publica (`FOR UPDATE SKIP LOCKED`, seguro con varias 
 | `TripEventReported` | Novedad del viaje | `{tripEventId, itineraryId, busId, tipo, descripcion, payload, timestamp}` |
 | `DriverAssigned` | US-121: se asigna un conductor (también al reemplazar) | `{itineraryId, companyId, conductorId, rol}` |
 | `DriverUnassigned` | US-121: se quita, se reemplaza o se cancela el viaje (también al quitarla por un cruce tras reprogramar) | `{itineraryId, companyId, conductorId, rol}` |
-| `DriverAssignmentConflict` | HT-16: tras `ItineraryRescheduled` el conductor queda con un cruce de horario; se le quita la asignación para que el operador asigne otro | `{itineraryId, companyId, conductorId, conflictoCon}` |
+| `DriverAssignmentConflict` | Se le quita la asignación al conductor para que el operador asigne otro. HT-16: tras `ItineraryRescheduled` queda con un cruce de horario (`motivo: CRUCE_DE_HORARIO`); HT-10: identity eliminó al usuario (`UserDeleted`, `motivo: CONDUCTOR_ELIMINADO`, `conflictoCon: null`) | `{itineraryId, companyId, conductorId, rol, motivo, conflictoCon}` |
 | `TripAlertRaised` | US-176: novedad grave (`AVERIA`, `ACCIDENTE`, `VIA_CERRADA`) o SOS. Para el tópico **privado** de la empresa; sin datos del conductor | `{alertId, itineraryId, companyId, busId, tipo, gravedad, lat, lng, mensaje, puedeContinuar}` |
 | `TripAlertResolved` | US-176: el operador resuelve la alerta | `{alertId, itineraryId, companyId, busId, tipo, nota, resueltoEn}` |
 | `TripInterrupted` | US-176: la novedad trae `puedeContinuar: false`. El operador decide en catalog si reprograma o cancela (no es automático) | `{itineraryId, companyId, tipo}` |
@@ -149,7 +153,7 @@ el cambio y un *relay* los publica (`FOR UPDATE SKIP LOCKED`, seguro con varias 
 `TripEventReported` sale también para las novedades automáticas (`LLEGADA_PARADA`, `RETRASO`, `DESVIO`)
 y `TripAlertRaised` para el desvío detectado (gravedad `ALTA`).
 
-**Consume** (de catalog; idempotente por `eventId` con `processed_events`):
+**Consume** (de catalog e identity; idempotente por `eventId` con `processed_events`):
 
 | Evento | Efecto |
 |---|---|
@@ -158,6 +162,7 @@ y `TripAlertRaised` para el desvío detectado (gravedad `ALTA`).
 | `ItineraryRescheduled` `{itineraryId, fechaSalida, fechaLlegada}` | HT-16: actualiza las fechas (la ventana de rastreo se mueve sola). Si un conductor asignado queda con un cruce (regla de US-121), se le quita la asignación y se publica `DriverAssignmentConflict`. |
 | `ItineraryBusChanged` `{itineraryId, busNuevo}` | HT-16: cambia el bus; la sesión de rastreo y las asignaciones se mantienen. |
 | `RouteCreated` / `RouteUpdated` `{routeId, paradas}` | HT-16: reemplaza las paradas de la ruta en `route_stops` (la copia local que usa el mapa). |
+| `UserDeleted` `{userId}` (de identity) | HT-10: si era conductor, se quita de sus asignaciones en viajes que aún no terminan (no cancelados, sin finalizar y con llegada futura) y se publica `DriverAssignmentConflict` (y `DriverUnassigned`) por cada una. El historial de los viajes terminados no se toca. |
 
 ### Tipos de novedad (`POST /trips/{id}/events`)
 
@@ -211,6 +216,83 @@ local (`common/geo/Geo`).
 | `delay-threshold-min` | `10` | Minutos de retraso desde los que se registra `RETRASO` |
 | `deviation-m` | `1000` | Distancia (m) a la ruta a partir de la cual una lectura cuenta como desvío |
 | `eta-publish-interval` | `30s` | Intervalo mínimo entre dos `EtaUpdated` del mismo viaje |
+
+### Compartir mi viaje (US-181)
+
+- `POST /share-links` crea un código de **8 caracteres** del alfabeto `ABCDEFGHJKMNPQRSTUVWXYZ23456789` (sin
+  `0`/`O` ni `1`/`I`/`L`, que se confunden al dictarlo) con `SecureRandom`. Se guarda en Redis
+  (`fleet:share:{codigo}`) **solo** con `{itineraryId, venceEn}`: el enlace nunca lleva datos del pasajero.
+- Vence en la **llegada estimada + 2 h**: el fin real si el viaje ya terminó; si no, la ETA de la última
+  parada (US-180) o, sin ETA, `fechaLlegada`. La llave expira sola en Redis en ese momento.
+- Máximo **5 enlaces por usuario y viaje** (contador `fleet:share-limit:{itineraryId}:{userId}` con el mismo
+  vencimiento): el sexto responde 409 `SHARE_LINK_LIMIT`. Viaje cancelado: 409 `TRIP_CANCELLED`; ya vencido:
+  409 `TRIP_FINISHED`; inexistente: 404 `TRIP_NOT_FOUND`. Redis caído: 503 `SHARE_UNAVAILABLE`.
+- `GET /share/{codigo}` es público. El familiar sigue el viaje con los endpoints públicos de siempre
+  (`/itineraries/{id}/bus-position`, `/itineraries/{id}/eta`, `/trips/{id}/timeline`).
+
+### Puntualidad (US-182, US-193)
+
+Tabla `trip_punctuality` (una fila por viaje): `salida_programada`, `salida_real`, `llegada_programada`,
+`llegada_real`, `minutos_retraso_salida`, `minutos_retraso_llegada`, `paradas_a_tiempo`, `paradas_total`,
+`conductor_id` (el `PRINCIPAL`, o quien inició el viaje), `route_id` y `company_id`. Se llena (o se
+actualiza) al **finalizar el viaje** (US-171, conductor u operador) o cuando su **rastreo pasa a
+`FINALIZADO`** (job de US-174). Los viajes cancelados no se registran.
+
+**Regla de puntualidad:**
+
+| Dato | Cómo se calcula |
+|---|---|
+| Salida real | La novedad `INICIO` (la primera). |
+| Llegada real | La `LLEGADA_PARADA` de la última parada o, si no hay, el `FIN`. |
+| Minutos de retraso | `real − programada` en minutos completos (negativo si fue antes); `null` sin dato real. |
+| Parada a tiempo | Llegó con **5 min de retraso o menos** respecto a `fechaSalida + minutos_desde_salida`. La primera parada usa la salida real y la última la llegada real si no tienen `LLEGADA_PARADA`. Sin llegada registrada: no está a tiempo. |
+| Viaje a tiempo (US-193) | Llegó con **10 min de retraso o menos**. |
+
+`GET /itineraries/{id}/track` devuelve:
+
+```json
+{
+  "itineraryId": "…", "origen": "Bogotá", "destino": "Tunja",
+  "recorrido": [{"lat": 4.65, "lng": -74.10, "timestamp": "…"}],
+  "paradas": [{"orden": 1, "nombre": "Bogotá", "lat": 4.65, "lng": -74.10, "programada": "…", "real": "…", "aTiempo": true}],
+  "puntualidad": {"salidaProgramada": "…", "salidaReal": "…", "llegadaProgramada": "…", "llegadaReal": "…",
+                  "minutosRetrasoSalida": 3, "minutosRetrasoLlegada": -9, "paradasATiempo": 2, "paradasTotal": 3}
+}
+```
+
+El recorrido toma la primera posición de cada minuto (`DISTINCT ON (date_trunc('minute', …))`), así que
+funciona igual con las posiciones resumidas de HT-08; pasados 90 días queda vacío y la puntualidad sigue
+saliendo de `trip_punctuality` (si un viaje terminado por horario no tiene fila, se calcula al vuelo).
+
+`GET /reports/punctuality` hace **una consulta agregada** sobre `trip_punctuality` (`GROUP BY route_id` o
+`conductor_id`, índice `(company_id, salida_programada)`):
+
+```json
+{"desde": "2026-03-01", "hasta": "2026-03-31", "agrupar": "conductor", "companyId": "…",
+ "grupos": [{"routeId": null, "conductorId": "…", "nombre": "Ana", "viajes": 2,
+             "retrasoPromedioSalidaMin": 6.0, "retrasoPromedioLlegadaMin": 12.5,
+             "porcentajeViajesATiempo": 50.0, "porcentajeParadasATiempo": 62.5}]}
+```
+
+Grupos ordenados por número de viajes. Promedios con un decimal (`null` si ningún viaje tiene el dato);
+`porcentajeParadasATiempo` es `null` si no hay paradas. Agrupado por conductor, `nombre` sale de identity
+(`DriverNameCache`, caché de 10 min; `null` si identity no lo conoce o no responde). Errores: 400
+`INVALID_RANGE` (`hasta` antes de `desde`), `RANGE_TOO_LARGE` (más de 366 días), `INVALID_GROUPING`;
+403 `NO_COMPANY` (operador sin empresa) y 403 para otros roles.
+
+### Retención de posiciones (HT-08)
+
+`PositionRetentionJob` corre todos los días a las 4:00 (`America/Bogota`, `tripbus.jobs.positions-retention-cron`)
+en **un solo nodo** (`LeaderLock`):
+
+1. Borra las posiciones de más de `tripbus.fleet.positions.keep-days` (**90**) días.
+2. Las de más de `tripbus.fleet.positions.detail-days` (**7**) días las resume a **una por minuto por viaje**
+   (la primera de cada minuto; las que no tienen viaje, por bus), de a una hora por vez. Hasta dónde ya se
+   resumió queda en Redis (`fleet:positions:resumidas-hasta`) para no recorrer cada día lo ya resumido.
+
+Todo por lotes de `tripbus.fleet.positions.batch-size` (5000) filas por sentencia, cada una en su propia
+transacción, con el índice `bus_positions (registrado_en)`. La puntualidad no depende de las posiciones:
+queda en `trip_punctuality`.
 
 ## Simulador GPS
 
@@ -337,7 +419,9 @@ no arranca y dice cuáles faltan (`RequiredSecretsCheck`).
 
 Opcionales con valor por defecto: `SERVER_PORT` (18005), `DB_HOST` (localhost), `DB_PORT` (18105),
 `DB_NAME` (tripbus_fleet), `DB_USERNAME` (fleet), `DB_POOL_SIZE`, `REDIS_HOST` (localhost),
-`REDIS_PORT` (18100), `SIMULATOR_ENABLED` (IDE `false`, QA `true`, PROD `false`), `TELEMETRY_STREAM`.
+`REDIS_PORT` (18100), `SIMULATOR_ENABLED` (IDE `false`, QA `true`, PROD `false`), `TELEMETRY_STREAM`,
+`LOG_FORMAT` (`text`; en PROD `json`), `OTEL_EXPORTER_OTLP_ENDPOINT` (vacía: no se exportan trazas),
+`TRACING_SAMPLING` (`0.1`) y `OPENAPI_SERVER_URL` (vacía). Ver [Observabilidad](#observabilidad).
 `DB_HOST` reemplaza a la antigua `DB_URL`.
 
 ## Swagger
@@ -346,6 +430,8 @@ Solo en IDE y QA (en `prod` springdoc está apagado y responde 404):
 
 - UI: http://localhost:18005/swagger-ui.html
 - OpenAPI JSON: http://localhost:18005/v3/api-docs
+- Con `OPENAPI_SERVER_URL` (p. ej. la URL del API Gateway) el documento anuncia ese servidor y "Try it out"
+  pasa por él; vacía (por defecto), springdoc usa la URL del propio servicio.
 
 La posición del bus y la línea de tiempo son públicas. Para `/driver/**` (CONDUCTOR),
 `/telemetry/position` (ADMIN) y `POST /trips/{id}/events` haz login en identity (`/auth/login`) con el
@@ -357,8 +443,35 @@ usuario del rol que corresponda y pega el `accessToken` en **Authorize**.
 - `/actuator/info`: versión y fecha del build, y `app.commit` (el commit con el que se construyó la imagen).
 - Cada petición lleva un `requestId`: se reutiliza el header `X-Request-Id` (lo manda el API Gateway)
   o se genera uno, y se devuelve en la respuesta. Fleet lo **propaga** en sus llamadas salientes
-  (`CatalogClient`, paradas de la ruta), así una petición se sigue entre servicios. Logs legibles con
-  `[requestId]` en IDE/QA y JSON (con `requestId` y `"service":"fleet-trip-events-service"`) en PROD.
+  (`CatalogClient` e `IdentityClient`), así una petición se sigue entre servicios.
+
+**Trazas (HT-10):** Micrometer Tracing con el puente de OpenTelemetry (`micrometer-tracing-bridge-otel` y
+`opentelemetry-exporter-otlp`, versiones de Spring Boot). Se muestrea `TRACING_SAMPLING` (10 % por defecto)
+y se exportan por OTLP/HTTP a `${OTEL_EXPORTER_OTLP_ENDPOINT}/v1/traces` solo si la variable tiene valor
+(vacía = no se exporta; `ObservabilityEnvironment`). El contexto W3C (`traceparent`) se propaga:
+
+- en las llamadas HTTP a catalog e identity (los `RestClient` salen del `RestClient.Builder` de Boot, con
+  observación);
+- en el stream de telemetría: cada posición encolada lleva `traceparent` y el consumidor la procesa como
+  hijo de esa traza (`TracePropagation`);
+- en los eventos del outbox: la columna `outbox.trace_parent` guarda la traza que generó el evento, el relay
+  la publica en el campo `traceparent` del stream y `EventConsumer` maneja el evento dentro de esa traza.
+
+**Logs:** texto legible por defecto, con `[traceId,spanId] [requestId] [itineraryId]`. Con `LOG_FORMAT=json`
+(por defecto en PROD) se usa el logging estructurado de Spring Boot en formato **ECS**
+(`logging.structured.format.console=ecs`): una línea JSON por evento con todo el MDC (`traceId`, `spanId`,
+`requestId` e `itineraryId` cuando existe). El `itineraryId` lo ponen las rutas `/itineraries/{id}`,
+`/trips/{id}` y `{itineraryId}` (`ItineraryMdcInterceptor`) y los consumidores de telemetría y eventos.
+**Nunca** se escriben coordenadas junto al id del conductor en el mismo log (ni el `conductorId` va al MDC).
+
+**Métricas** (en `/actuator/prometheus`):
+
+| Métrica | Tipo | Etiquetas | Qué cuenta |
+|---|---|---|---|
+| `tripbus_posiciones_total` | Counter | `resultado=aceptada\|descartada`, `motivo` | Posiciones recibidas (del conductor y de `/telemetry/position`). Las aceptadas llevan `motivo="ninguno"`; las descartadas el motivo de US-173 (`PRECISION_BAJA`, `SALTO_IMPOSIBLE`…) o el código de error (`STALE_POSITION`, `TELEMETRY_UNAVAILABLE`…). |
+| `tripbus_sesiones_rastreo` | Gauge | `estado` | Sesiones de rastreo en cada estado (una consulta agrupada, reutilizada 15 s). |
+| `tripbus_alertas_total` | Counter | `tipo`, `gravedad` | Alertas creadas para el operador (novedades graves, SOS y desvíos). |
+| `tripbus_procesar_posicion_segundos` | Timer | — | Tiempo de procesar cada posición del stream de telemetría (los Timer `tripbus.*` salen con sufijo `_segundos`, `MetricsConfig`). |
 
 ## Pruebas
 
@@ -389,6 +502,16 @@ mvn -B verify      # unitarias + integración con PostgreSQL y Redis reales (Tes
   aparecen), operador que no ve otra empresa, ADMIN con y sin `companyId`, identity caído (nombre
   `null`) y `companyId` en `PositionUpdated` y `EtaUpdated`. `FleetLiveServiceTest` y
   `DriverNameCacheTest`: resumen, Redis caído y caché de nombres.
+- `ObservabilidadIT` (con tracing, métricas y los consumidores de los streams encendidos): `traceparent` en
+  la posición encolada, en el evento del outbox y en las llamadas a identity; métricas propias en
+  `/actuator/prometheus`; y `UserDeleted` que saca al conductor de sus viajes pendientes (sin tocar los
+  terminados). `TracePropagationTest`, `FleetMetricsTest`, `TrackingSessionGaugesTest`,
+  `ObservabilityEnvironmentTest`, `ItineraryMdcInterceptorTest` y `OpenApiConfigTest`: unitarias de HT-10.
+- `HistorialViajeIT`: enlace creado, vencido (Awaitility), por encima del límite y con ETA; puntualidad
+  calculada al finalizar y al pasar a `FINALIZADO`; recorrido de un viaje no terminado o cancelado (404);
+  reporte por ruta y por conductor (con nombre de identity), otra empresa y ADMIN; y resumen y borrado de
+  posiciones con `/itineraries/{id}/track` funcionando después. `ShareLinkServiceTest`: códigos sin
+  ambigüedad, choques y Redis caído.
 
 Toda la plataforma: ver el README de **API-gateway**.
 
@@ -406,10 +529,10 @@ Toda la plataforma: ver el README de **API-gateway**.
 `mvn verify` falla si la cobertura total baja de los mínimos del `pom.xml`, en **todas** las ramas
 (también en `main`, donde Sonar no corre):
 
-| Métrica | Medido (2026-10-29) | Mínimo |
+| Métrica | Medido (2026-11-04) | Mínimo |
 |---|---|---|
-| Líneas | 89,4 % | `jacoco.minimo.lineas` = 0.85 |
-| Ramas | 86,9 % | `jacoco.minimo.ramas` = 0.85 |
+| Líneas | 95,8 % | `jacoco.minimo.lineas` = 0.95 |
+| Ramas | 90,1 % | `jacoco.minimo.ramas` = 0.90 |
 
 **La cobertura nunca puede bajar: si agregas pruebas, sube el mínimo.** Corre `mvn verify`, mira
 el total en `target/site/jacoco/index.html` (o la tabla del CI), redondéalo hacia abajo al 5 % y
@@ -429,6 +552,11 @@ corrigen en Spring Framework 7; fleet no usa XsltView ni SSE); cada una explica 
 qué se acepta. Todas **vencen el 2027-01-31** (`expired_at`): desde esa fecha Trivy vuelve a fallar
 si no se migró a Spring Boot 4.1. Lo que sí tiene parche nunca se agrega aquí: se corrige subiendo la
 versión (ver las propiedades `*.version` de parches de seguridad en `pom.xml`).
+
+Los paquetes de Alpine de la imagen se actualizan con `apk upgrade` en el `Dockerfile`. Como el CI construye
+con caché de capas (`type=gha`), esa capa se invalida en cada ejecución con el build-arg `APK_REFRESH`
+(`github.run_id`): así cada build trae los parches de Alpine publicados después de la última caché (p. ej.
+libexpat 2.10.0) y Trivy no falla por paquetes que ya tienen arreglo.
 
 El análisis de Sonar solo corre en `develop` (push y PR con base `develop`, ver
 [Flujo de ramas y entornos](#flujo-de-ramas-y-entornos)) y si el repo tiene el secreto `SONAR_TOKEN`;

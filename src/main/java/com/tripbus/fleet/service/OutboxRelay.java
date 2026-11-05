@@ -57,7 +57,7 @@ public class OutboxRelay {
 
     private int publishBatch() {
         List<Map<String, Object>> rows = jdbc.queryForList("""
-                SELECT id, event_type, payload FROM outbox
+                SELECT id, event_type, payload, trace_parent FROM outbox
                 WHERE publicado_en IS NULL
                 ORDER BY creado_en
                 LIMIT 100
@@ -67,7 +67,8 @@ public class OutboxRelay {
             UUID id = (UUID) row.get("id");
             try {
                 Object payload = objectMapper.readTree((String) row.get("payload"));
-                publisher.publish(id.toString(), (String) row.get("event_type"), payload);
+                publisher.publish(id.toString(), (String) row.get("event_type"), payload,
+                        (String) row.get("trace_parent"));
             } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
                 log.error("Mensaje de outbox corrupto {}", id);
             }

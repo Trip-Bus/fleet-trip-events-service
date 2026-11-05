@@ -1,6 +1,7 @@
 package com.tripbus.fleet.service;
 
 import com.tripbus.fleet.common.error.ApiException;
+import com.tripbus.fleet.common.observability.FleetMetrics;
 import com.tripbus.fleet.domain.FleetItinerary;
 import com.tripbus.fleet.domain.TripAlert;
 import com.tripbus.fleet.domain.TripEventType;
@@ -43,10 +44,12 @@ public class TripAlertService {
     private final TelemetryService telemetryService;
     private final Outbox outbox;
     private final Clock clock;
+    private final FleetMetrics metrics;
 
     public TripAlertService(TripAlertRepository alertRepository, FleetItineraryRepository itineraryRepository,
                             DriverTrackingService trackingService, TelemetryService telemetryService,
-                            Outbox outbox, Clock clock) {
+                            Outbox outbox, Clock clock, FleetMetrics metrics) {
+        this.metrics = metrics;
         this.alertRepository = alertRepository;
         this.itineraryRepository = itineraryRepository;
         this.trackingService = trackingService;
@@ -69,6 +72,7 @@ public class TripAlertService {
                 ultima != null ? Double.valueOf(ultima.lat()) : lat, ultima != null ? Double.valueOf(ultima.lng()) : lng,
                 mensaje, puedeContinuar, userId, clock.instant()));
         outbox.add(FleetEvents.TRIP_ALERT_RAISED, raisedPayload(alert));
+        metrics.alerta(alert.getTipo(), alert.getGravedad());
         return toResponse(alert);
     }
 
@@ -85,6 +89,7 @@ public class TripAlertService {
         TripAlert alert = alertRepository.save(new TripAlert(itinerary, TripEventType.DESVIO, lat, lng, mensaje, true,
                 null, clock.instant()).conGravedad(TripEventType.Gravedad.ALTA));
         outbox.add(FleetEvents.TRIP_ALERT_RAISED, raisedPayload(alert));
+        metrics.alerta(alert.getTipo(), alert.getGravedad());
         return true;
     }
 

@@ -15,11 +15,15 @@ public class CatalogClient {
 
     private final RestClient restClient;
 
-    public CatalogClient(FleetProperties properties) {
+    /**
+     * HT-10: parte del RestClient.Builder de Spring Boot (con observación: cada llamada crea un span y
+     * propaga la traza en el header traceparent), además del requestId.
+     */
+    public CatalogClient(FleetProperties properties, RestClient.Builder builder) {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(1000);
         factory.setReadTimeout(3000);
-        this.restClient = RestClient.builder()
+        this.restClient = builder
                 .baseUrl(properties.catalogUrl())
                 .requestFactory(factory)
                 .requestInterceptor(new RequestIdPropagationInterceptor())

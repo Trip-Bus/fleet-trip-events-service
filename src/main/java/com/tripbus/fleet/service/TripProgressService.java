@@ -30,8 +30,6 @@ import java.util.UUID;
 @Service
 public class TripProgressService {
 
-
-
     private final FleetItineraryRepository itineraryRepository;
     private final TripAssignmentRepository assignmentRepository;
     private final TripChecklistRepository checklistRepository;
@@ -41,12 +39,15 @@ public class TripProgressService {
     private final TrackingWindow trackingWindow;
     private final FleetProperties properties;
     private final Clock clock;
+    private final PunctualityService punctualityService;
 
     public TripProgressService(FleetItineraryRepository itineraryRepository,
                                TripAssignmentRepository assignmentRepository,
                                TripChecklistRepository checklistRepository, TripEventRepository eventRepository,
                                TripService tripService, DriverTrackingService trackingService,
-                               TrackingWindow trackingWindow, FleetProperties properties, Clock clock) {
+                               TrackingWindow trackingWindow, FleetProperties properties, Clock clock,
+                               PunctualityService punctualityService) {
+        this.punctualityService = punctualityService;
         this.itineraryRepository = itineraryRepository;
         this.assignmentRepository = assignmentRepository;
         this.checklistRepository = checklistRepository;
@@ -113,7 +114,10 @@ public class TripProgressService {
         }
         itinerary.finalizar(clock.instant());
         registrarSiNoExiste(itinerary, TripEventType.FIN, "El viaje finalizó", userId);
-        return toResponse(itinerary, trackingService.finalizar(itinerary));
+        TrackingSession session = trackingService.finalizar(itinerary);
+        // US-182: la puntualidad queda calculada al terminar.
+        punctualityService.registrar(itinerary);
+        return toResponse(itinerary, session);
     }
 
     /** Bloquea el viaje (dos inicios simultáneos no pasan los dos) y exige que el conductor esté asignado. */

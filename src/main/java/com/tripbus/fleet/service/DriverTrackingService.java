@@ -2,6 +2,7 @@ package com.tripbus.fleet.service;
 
 import com.tripbus.fleet.common.error.ApiException;
 import com.tripbus.fleet.common.geo.Geo;
+import com.tripbus.fleet.common.observability.FleetMetrics;
 import com.tripbus.fleet.config.FleetProperties;
 import com.tripbus.fleet.domain.FleetItinerary;
 import com.tripbus.fleet.domain.TrackingSession;
@@ -57,12 +58,17 @@ public class DriverTrackingService {
     private final FleetProperties properties;
     private final TransactionTemplate tx;
     private final Clock clock;
+    private final FleetMetrics metrics;
+    private final PunctualityService punctualityService;
 
     public DriverTrackingService(TripAssignmentRepository assignmentRepository,
                                  TrackingSessionRepository sessionRepository,
                                  FleetItineraryRepository itineraryRepository, TrackingWindow trackingWindow,
                                  TelemetryService telemetryService, Outbox outbox, FleetProperties properties,
-                                 TransactionTemplate tx, Clock clock) {
+                                 TransactionTemplate tx, Clock clock, FleetMetrics metrics,
+                                 PunctualityService punctualityService) {
+        this.punctualityService = punctualityService;
+        this.metrics = metrics;
         this.assignmentRepository = assignmentRepository;
         this.sessionRepository = sessionRepository;
         this.itineraryRepository = itineraryRepository;
@@ -147,6 +153,7 @@ public class DriverTrackingService {
             Instant ts = timestamp(lectura, now);
             String motivo = motivoDescarte(lectura, ts, session, itinerary, now);
             if (motivo != null) {
+                metrics.posicionDescartada(motivo);
                 resultados.add(new LocationResult(ts, false, motivo, null));
                 continue;
             }
@@ -264,6 +271,10 @@ public class DriverTrackingService {
             return false;
         }
         publicar(itinerary, session);
+        // US-182: al pasar a FINALIZADO queda calculada la puntualidad (salvo cancelado).
+        if (nuevo == TrackingStatus.FINALIZADO) {
+            punctualityService.registrar(itinerary);
+        }
         return true;
     }
 

@@ -34,8 +34,10 @@ public class SecurityConfig {
                         .requestMatchers("/internal/**").hasRole(InternalTokenFilter.INTERNAL_ROLE)
                         // Seguimiento del bus y línea de tiempo del viaje: lectura pública.
                         .requestMatchers(HttpMethod.GET, "/buses/*/position", "/itineraries/*/bus-position",
-                                "/itineraries/*/eta",
+                                "/itineraries/*/eta", "/itineraries/*/track",
                                 "/trips/*/timeline").permitAll()
+                        // US-181: enlace compartido con un familiar (POST /share-links sí exige usuario).
+                        .requestMatchers(HttpMethod.GET, "/share/*").permitAll()
                         // Swagger (en prod springdoc está apagado y estas rutas dan 404) y página de error.
                         .requestMatchers(HttpMethod.GET, "/v3/api-docs/**", "/swagger-ui/**",
                                 "/swagger-ui.html").permitAll()

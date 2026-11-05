@@ -30,7 +30,7 @@ class IdentityClientTest {
 
     @BeforeEach
     void setUp() {
-        RestClient.Builder builder = IdentityClient.builder(URL, "secreto");
+        RestClient.Builder builder = IdentityClient.builder(RestClient.builder(), URL, "secreto");
         server = MockRestServiceServer.bindTo(builder).build();
         client = new IdentityClient(builder);
     }
@@ -84,7 +84,7 @@ class IdentityClientTest {
     @Test
     void sinIdentityLevantadoResponde503() {
         // Puerto 9 (discard) cerrado en localhost: la conexión se rechaza de inmediato.
-        IdentityClient sinServidor = new IdentityClient("http://localhost:9", "secreto");
+        IdentityClient sinServidor = new IdentityClient(RestClient.builder(), "http://localhost:9", "secreto");
 
         assertThatThrownBy(() -> sinServidor.user(userId)).isInstanceOf(ApiException.class)
                 .hasFieldOrPropertyWithValue("code", "IDENTITY_UNAVAILABLE");
