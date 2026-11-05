@@ -222,7 +222,11 @@ jobs:
           context: .
           load: true
           push: false
-          build-args: GIT_COMMIT=${{ github.sha }}
+          # APK_REFRESH: repite el apk upgrade del Dockerfile en cada ejecución (parches de Alpine nuevos);
+          # es el mismo valor en los dos builds, así "Publicar imagen" reutiliza las capas escaneadas.
+          build-args: |
+            GIT_COMMIT=${{ github.sha }}
+            APK_REFRESH=${{ github.run_id }}-${{ github.run_attempt }}
           tags: fleet-trip-events-service:ci
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
@@ -255,7 +259,11 @@ jobs:
         with:
           context: .
           push: true
-          build-args: GIT_COMMIT=${{ github.sha }}
+          # APK_REFRESH: repite el apk upgrade del Dockerfile en cada ejecución (parches de Alpine nuevos);
+          # es el mismo valor en los dos builds, así "Publicar imagen" reutiliza las capas escaneadas.
+          build-args: |
+            GIT_COMMIT=${{ github.sha }}
+            APK_REFRESH=${{ github.run_id }}-${{ github.run_attempt }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

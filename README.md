@@ -553,6 +553,11 @@ qué se acepta. Todas **vencen el 2027-01-31** (`expired_at`): desde esa fecha T
 si no se migró a Spring Boot 4.1. Lo que sí tiene parche nunca se agrega aquí: se corrige subiendo la
 versión (ver las propiedades `*.version` de parches de seguridad en `pom.xml`).
 
+Los paquetes de Alpine de la imagen se actualizan con `apk upgrade` en el `Dockerfile`. Como el CI construye
+con caché de capas (`type=gha`), esa capa se invalida en cada ejecución con el build-arg `APK_REFRESH`
+(`github.run_id`): así cada build trae los parches de Alpine publicados después de la última caché (p. ej.
+libexpat 2.10.0) y Trivy no falla por paquetes que ya tienen arreglo.
+
 El análisis de Sonar solo corre en `develop` (push y PR con base `develop`, ver
 [Flujo de ramas y entornos](#flujo-de-ramas-y-entornos)) y si el repo tiene el secreto `SONAR_TOKEN`;
 en otro caso el CI hace `mvn verify` y deja un aviso.
