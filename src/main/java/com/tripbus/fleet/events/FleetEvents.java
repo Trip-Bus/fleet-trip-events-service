@@ -21,6 +21,9 @@ public final class FleetEvents {
     public static final String ROUTE_CREATED = "RouteCreated";
     public static final String ROUTE_UPDATED = "RouteUpdated";
 
+    // Consumidos de identity.
+    public static final String USER_DELETED = "UserDeleted";
+
     private FleetEvents() {
     }
 }

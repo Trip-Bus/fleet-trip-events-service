@@ -28,17 +28,16 @@
         <postgresql.version>42.7.12</postgresql.version>
 
         <springdoc.version>2.8.17</springdoc.version>
-        <logstash-logback.version>8.0</logstash-logback.version>
         <jacoco.version>0.8.12</jacoco.version>
         <wiremock.version>3.13.1</wiremock.version>
         <sonar-maven-plugin.version>5.8.0.7211</sonar-maven-plugin.version>
 
         <!-- Mínimos de cobertura total que exige jacoco:check (ver jacoco-maven-plugin).
              La cobertura nunca puede bajar: si agregas pruebas, sube el mínimo.
-             Medición del 2026-10-29 (US-178; JVM en UTC como el CI): líneas 89,4 %, ramas 86,9 %.
-             Mínimos: líneas 0.85; ramas 0.85. -->
-        <jacoco.minimo.lineas>0.85</jacoco.minimo.lineas>
-        <jacoco.minimo.ramas>0.85</jacoco.minimo.ramas>
+             Medición del 2026-11-04 (sprints 5 y 6; JVM en UTC como el CI): líneas 95,8 %, ramas 90,1 %.
+             Mínimos: líneas 0.95; ramas 0.90. -->
+        <jacoco.minimo.lineas>0.95</jacoco.minimo.lineas>
+        <jacoco.minimo.ramas>0.90</jacoco.minimo.ramas>
 
         <!-- SonarQube Cloud: el análisis lo lanza el CI solo en develop (push y PR con base develop)
              cuando existe el secreto SONAR_TOKEN. El plan Free analiza una única rama. -->
@@ -74,6 +73,11 @@
             **/web/dto/TripAlertResponse.java,
             **/web/dto/EtaView.java,
             **/web/dto/FleetLiveResponse.java,
+            **/web/dto/TripTrackView.java,
+            **/web/dto/PunctualityReport.java,
+            **/web/dto/ShareLinkRequest.java,
+            **/web/dto/ShareLinkResponse.java,
+            **/web/dto/SharedTripView.java,
             **/domain/BusPosition.java,
             **/domain/OutboxMessage.java,
             **/domain/TripEvent.java,
@@ -146,11 +150,17 @@
             <version>${springdoc.version}</version>
         </dependency>
 
-        <!-- Logs en JSON en PROD (logback-spring.xml). -->
+        <!-- HT-10: trazas distribuidas (Micrometer Tracing + OpenTelemetry, exportadas por OTLP si hay
+             OTEL_EXPORTER_OTLP_ENDPOINT). Versiones gestionadas por Spring Boot. Los logs en JSON usan el
+             logging estructurado de Boot (ECS) con LOG_FORMAT=json. -->
         <dependency>
-            <groupId>net.logstash.logback</groupId>
-            <artifactId>logstash-logback-encoder</artifactId>
-            <version>${logstash-logback.version}</version>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-otel</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
         </dependency>
 
         <dependency>
@@ -270,6 +280,11 @@
                         <exclude>**/web/dto/TripAlertResponse.class</exclude>
                         <exclude>**/web/dto/EtaView.class</exclude>
                         <exclude>**/web/dto/FleetLiveResponse*.class</exclude>
+                        <exclude>**/web/dto/TripTrackView*.class</exclude>
+                        <exclude>**/web/dto/PunctualityReport*.class</exclude>
+                        <exclude>**/web/dto/ShareLinkRequest.class</exclude>
+                        <exclude>**/web/dto/ShareLinkResponse.class</exclude>
+                        <exclude>**/web/dto/SharedTripView.class</exclude>
                         <exclude>**/domain/BusPosition.class</exclude>
                         <exclude>**/domain/OutboxMessage.class</exclude>
                         <exclude>**/domain/TripEvent.class</exclude>

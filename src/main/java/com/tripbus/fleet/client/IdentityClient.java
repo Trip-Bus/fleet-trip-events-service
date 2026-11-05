@@ -37,9 +37,9 @@ public class IdentityClient {
     private final RestClient restClient;
 
     @Autowired
-    public IdentityClient(@Value("${tripbus.services.identity-url}") String identityUrl,
+    public IdentityClient(RestClient.Builder base, @Value("${tripbus.services.identity-url}") String identityUrl,
                           @Value("${tripbus.internal-token}") String internalToken) {
-        this(builder(identityUrl, internalToken));
+        this(builder(base, identityUrl, internalToken));
     }
 
     /** Las pruebas enlazan un MockRestServiceServer al builder antes de construir el cliente. */
@@ -47,11 +47,15 @@ public class IdentityClient {
         this.restClient = builder.build();
     }
 
-    static RestClient.Builder builder(String identityUrl, String internalToken) {
+    /**
+     * HT-10: base es el RestClient.Builder de Spring Boot (con observación: cada llamada crea un span y
+     * propaga la traza en el header traceparent).
+     */
+    static RestClient.Builder builder(RestClient.Builder base, String identityUrl, String internalToken) {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(CONNECT_TIMEOUT);
         factory.setReadTimeout(READ_TIMEOUT);
-        return RestClient.builder()
+        return base
                 .baseUrl(identityUrl)
                 .requestFactory(factory)
                 .defaultHeader(InternalTokenFilter.HEADER, internalToken)

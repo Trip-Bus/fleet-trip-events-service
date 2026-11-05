@@ -44,4 +44,8 @@ public interface TrackingSessionRepository extends JpaRepository<TrackingSession
     /** Sesiones que el job puede tener que pasar a SIN_SENAL o FINALIZADO. */
     @Query("select s.itineraryId from TrackingSession s where s.estado <> com.tripbus.fleet.domain.TrackingStatus.FINALIZADO")
     List<UUID> findAbiertas();
+
+    /** HT-10: [estado, cantidad] de las sesiones (Gauge tripbus_sesiones_rastreo). */
+    @Query("select s.estado, count(s) from TrackingSession s group by s.estado")
+    List<Object[]> contarPorEstado();
 }
