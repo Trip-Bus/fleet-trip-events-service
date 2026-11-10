@@ -1,5 +1,7 @@
 package com.tripbus.fleet.service;
 
+import com.tripbus.fleet.common.observability.FleetMetrics;
+import com.tripbus.fleet.common.observability.TracePropagation;
 import com.tripbus.fleet.config.FleetProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,6 +18,7 @@ import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Map;
 import java.util.UUID;
 
 /** Consumidor independiente de la ingesta GPS (stream tripbus:telemetry, consumer group propio). */
@@ -29,6 +32,8 @@ public class TelemetryConsumer implements SmartLifecycle {
     private final TelemetryService telemetryService;
     private final FleetProperties properties;
     private final boolean enabled;
+    private final TracePropagation tracing;
+    private final FleetMetrics metrics;
     private final String consumerName = "t-" + UUID.randomUUID().toString().substring(0, 8);
     private StreamMessageListenerContainer<String, MapRecord<String, String, String>> container;
     private volatile boolean running;
@@ -36,7 +41,9 @@ public class TelemetryConsumer implements SmartLifecycle {
     public TelemetryConsumer(RedisConnectionFactory connectionFactory, StringRedisTemplate redis,
                              TelemetryService telemetryService, FleetProperties properties,
                              @org.springframework.beans.factory.annotation.Value("${tripbus.events.consumer-enabled:true}")
-                             boolean enabled) {
+                             boolean enabled, TracePropagation tracing, FleetMetrics metrics) {
+        this.tracing = tracing;
+        this.metrics = metrics;
         this.connectionFactory = connectionFactory;
         this.redis = redis;
         this.telemetryService = telemetryService;
@@ -70,7 +77,7 @@ public class TelemetryConsumer implements SmartLifecycle {
                 .build();
         container.register(request, record -> {
             try {
-                telemetryService.process(record.getValue());
+                procesar(record.getValue());
             } catch (Exception e) {
                 log.error("Posición descartada {}: {}", record.getId(), e.getMessage());
             }
@@ -78,6 +85,15 @@ public class TelemetryConsumer implements SmartLifecycle {
         });
         container.start();
         running = true;
+    }
+
+    /**
+     * HT-10: procesa la posición como hijo de la traza de quien la encoló, con el itineraryId en el MDC y
+     * midiendo el tiempo (tripbus_procesar_posicion_segundos).
+     */
+    void procesar(Map<String, String> fields) {
+        metrics.procesarPosicion(() -> tracing.enSpan("telemetria.procesar", fields.get(TracePropagation.CAMPO),
+                fields.get("itineraryId"), () -> telemetryService.process(fields)));
     }
 
     private void ensureGroup() {

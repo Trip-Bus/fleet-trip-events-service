@@ -2,6 +2,8 @@ package com.tripbus.fleet.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tripbus.fleet.common.error.ApiException;
+import com.tripbus.fleet.common.observability.FleetMetrics;
+import com.tripbus.fleet.common.observability.TracePropagation;
 import com.tripbus.fleet.config.FleetProperties;
 import com.tripbus.fleet.domain.BusPosition;
 import com.tripbus.fleet.events.FleetEvents;
@@ -12,6 +14,7 @@ import com.tripbus.fleet.web.dto.PositionRequest;
 import com.tripbus.fleet.web.dto.PositionResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.redis.connection.stream.StreamRecords;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -46,12 +49,19 @@ public class TelemetryService {
     private final FleetProperties properties;
     private final TrackingWindow trackingWindow;
     private final Clock clock;
+    private final ApplicationEventPublisher events;
+    private final TracePropagation tracing;
+    private final FleetMetrics metrics;
     private final java.util.concurrent.atomic.AtomicLong ingested = new java.util.concurrent.atomic.AtomicLong();
 
     public TelemetryService(StringRedisTemplate redis, BusPositionRepository positionRepository,
                             FleetItineraryRepository itineraryRepository, Outbox outbox,
                             ObjectMapper objectMapper, FleetProperties properties, TrackingWindow trackingWindow,
-                            Clock clock) {
+                            Clock clock, ApplicationEventPublisher events,
+                            TracePropagation tracing, FleetMetrics metrics) {
+        this.events = events;
+        this.tracing = tracing;
+        this.metrics = metrics;
         this.redis = redis;
         this.positionRepository = positionRepository;
         this.itineraryRepository = itineraryRepository;
@@ -63,28 +73,18 @@ public class TelemetryService {
     }
 
     /**
-     * US-038/US-005: quien publica la posición debe operar el bus. Fuera de ADMIN, el bus (y el
-     * itinerario, si se envía) debe ser de la empresa del token. Solo la llama el controlador:
-     * el simulador GPS usa {@link #ingest} directamente, sin usuario.
+     * POST /telemetry/position (solo ADMIN, pruebas manuales): si trae itinerario, debe existir y
+     * ser de ese bus. Los conductores usan /driver/location (US-173) y el simulador GPS usa
+     * {@link #ingest} directamente.
      */
-    public void autorizar(PositionRequest request, UUID companyId, boolean esAdmin) {
+    public void validarItinerario(PositionRequest request) {
         if (request.itineraryId() != null) {
             FleetItinerary itinerary = itineraryRepository.findById(request.itineraryId())
                     .orElseThrow(() -> ApiException.notFound("ITINERARY_NOT_FOUND", "Itinerario no encontrado"));
             if (!itinerary.getBusId().equals(request.busId())) {
                 throw ApiException.badRequest("BUS_ITINERARY_MISMATCH", "El bus no corresponde al itinerario");
             }
-            if (!esAdmin && (companyId == null || !companyId.equals(itinerary.getCompanyId()))) {
-                throw notYourCompany();
-            }
-        } else if (!esAdmin && (companyId == null
-                || !itineraryRepository.existsByBusIdAndCompanyId(request.busId(), companyId))) {
-            throw notYourCompany();
         }
-    }
-
-    private static ApiException notYourCompany() {
-        return ApiException.forbidden("NOT_YOUR_COMPANY", "Solo puede enviar posiciones de buses de su empresa");
     }
 
     /** Valida y encola. Devuelve el eventId asignado a la posición. */
@@ -93,20 +93,40 @@ public class TelemetryService {
         Instant timestamp = request.timestamp() != null ? request.timestamp() : now;
         // Validación mínima de GPS (US-040 completa está en el backlog).
         if (timestamp.isBefore(now.minus(properties.maxPositionAge()))) {
-            throw ApiException.badRequest("STALE_POSITION", "La posición es demasiado antigua y se descarta");
+            throw descartada("STALE_POSITION", "La posición es demasiado antigua y se descarta");
         }
         if (timestamp.isAfter(now.plus(Duration.ofMinutes(2)))) {
-            throw ApiException.badRequest("FUTURE_POSITION", "La posición tiene una fecha futura");
+            throw descartada("FUTURE_POSITION", "La posición tiene una fecha futura");
         }
         if (request.lat() == 0.0 && request.lng() == 0.0) {
-            throw ApiException.badRequest("INVALID_COORDINATES", "Coordenadas (0,0) inválidas");
+            throw descartada("INVALID_COORDINATES", "Coordenadas (0,0) inválidas");
         }
+        return enqueue(request, timestamp, null, null);
+    }
+
+    /** HT-10: cuenta la posición descartada (tripbus_posiciones_total) y devuelve el 400. */
+    private ApiException descartada(String codigo, String mensaje) {
+        metrics.posicionDescartada(codigo);
+        return ApiException.badRequest(codigo, mensaje);
+    }
+
+    /**
+     * Encola en el stream de telemetría una posición ya validada (US-173: la del conductor llega
+     * con sus propios filtros). conductorId y precision solo se guardan en bus_positions.
+     */
+    public String enqueue(PositionRequest request, Instant timestamp, UUID conductorId, Double precision) {
         String eventId = UUID.randomUUID().toString();
         Map<String, String> fields = new LinkedHashMap<>();
         fields.put("eventId", eventId);
         fields.put("busId", request.busId().toString());
         if (request.itineraryId() != null) {
             fields.put("itineraryId", request.itineraryId().toString());
+        }
+        if (conductorId != null) {
+            fields.put("conductorId", conductorId.toString());
+        }
+        if (precision != null) {
+            fields.put("precision", String.valueOf(precision));
         }
         fields.put("lat", String.valueOf(request.lat()));
         fields.put("lng", String.valueOf(request.lng()));
@@ -117,14 +137,21 @@ public class TelemetryService {
             fields.put("rumbo", String.valueOf(request.rumbo()));
         }
         fields.put("timestamp", timestamp.toString());
+        // HT-10: el consumidor sigue la misma traza.
+        String traceparent = tracing.actual();
+        if (traceparent != null) {
+            fields.put(TracePropagation.CAMPO, traceparent);
+        }
         try {
             redis.opsForStream().add(StreamRecords.newRecord().in(properties.telemetryStream()).ofMap(fields));
             if (ingested.incrementAndGet() % 1000 == 0) {
                 redis.opsForStream().trim(properties.telemetryStream(), 100_000, true);
             }
         } catch (RuntimeException e) {
+            metrics.posicionDescartada("TELEMETRY_UNAVAILABLE");
             throw ApiException.unavailable("TELEMETRY_UNAVAILABLE", "No se pudo encolar la posición");
         }
+        metrics.posicionAceptada();
         return eventId;
     }
 
@@ -140,7 +167,8 @@ public class TelemetryService {
         BusPosition position = positionRepository.save(new BusPosition(eventId, busId, itineraryId,
                 Double.parseDouble(fields.get("lat")), Double.parseDouble(fields.get("lng")),
                 parse(fields.get("velocidad")), parse(fields.get("rumbo")), Instant.parse(fields.get("timestamp")),
-                clock.instant()));
+                clock.instant(), fields.containsKey("conductorId") ? UUID.fromString(fields.get("conductorId")) : null,
+                parse(fields.get("precision"))));
 
         PositionResponse view = toView(position);
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
@@ -150,18 +178,25 @@ public class TelemetryService {
             }
         });
         // US-039/US-047: fuera de un viaje en ventana activa la posición solo queda para auditoría.
-        if (!trackingWindow.isActivePosition(busId, itineraryId, view.timestamp())) {
+        Optional<FleetItinerary> viaje = trackingWindow.activeForPosition(busId, itineraryId, view.timestamp());
+        if (viaje.isEmpty()) {
             return;
         }
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("busId", busId);
         payload.put("itineraryId", itineraryId);
+        // US-178: para el mapa de la flota del operador (nunca conductorId ni otros datos personales).
+        payload.put("companyId", viaje.get().getCompanyId());
         payload.put("lat", view.lat());
         payload.put("lng", view.lng());
         payload.put("velocidad", view.velocidad());
         payload.put("rumbo", view.rumbo());
         payload.put("timestamp", view.timestamp());
         outbox.add(FleetEvents.POSITION_UPDATED, payload);
+        // US-177/US-180: detección automática y ETA, tras el commit (ver TripAnalysisService).
+        if (itineraryId != null) {
+            events.publishEvent(new PositionAccepted(itineraryId, view.lat(), view.lng(), view.timestamp()));
+        }
     }
 
     public Optional<PositionResponse> lastByBus(UUID busId) {
@@ -203,12 +238,5 @@ public class TelemetryService {
     static PositionResponse toView(BusPosition p) {
         return new PositionResponse(p.getBusId(), p.getItineraryId(), p.getLat(), p.getLng(), p.getVelocidad(),
                 p.getRumbo(), p.getRegistradoEn());
-    }
-
-    @org.springframework.scheduling.annotation.Scheduled(cron = "0 0 4 * * *", zone = "America/Bogota")
-    @Transactional
-    public void purgeOldPositions() {
-        int deleted = positionRepository.deleteOlderThan(clock.instant().minus(Duration.ofDays(7)));
-        log.info("Posiciones antiguas eliminadas: {}", deleted);
     }
 }

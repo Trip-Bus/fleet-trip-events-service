@@ -6,6 +6,7 @@ import com.tripbus.fleet.common.events.EventEnvelope;
 import com.tripbus.fleet.common.redis.LeaderLock;
 import com.tripbus.fleet.events.FleetEventsHandler;
 import com.tripbus.fleet.repository.FleetItineraryRepository;
+import com.tripbus.fleet.service.DriverTrackingService;
 import com.tripbus.fleet.service.OutboxRelay;
 import com.tripbus.fleet.service.RouteStopsCache;
 import com.tripbus.fleet.service.TelemetryService;
@@ -33,8 +34,7 @@ import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
+import org.springframework.test.annotation.DirtiesContext;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -66,16 +66,22 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @ActiveProfiles("it")
 @TestPropertySource(properties = "TELEMETRY_STREAM=tripbus:telemetry:test")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-@Testcontainers
+@DirtiesContext
 class FleetIT {
 
-    @Container
     @ServiceConnection
     static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
 
-    @Container
     @ServiceConnection(name = "redis")
     static GenericContainer<?> redisContainer = new GenericContainer<>("redis:7-alpine").withExposedPorts(6379);
+
+    // Arrancados aquí (sin @Container) para que sigan vivos mientras @DirtiesContext cierra el contexto
+    // al terminar la clase; si no, el relay programado del outbox espera una conexión y el cierre de la
+    // JVM tarda 30 s. Ryuk los borra al final.
+    static {
+        postgres.start();
+        redisContainer.start();
+    }
 
     @Autowired
     private MockMvc mvc;
@@ -102,6 +108,8 @@ class FleetIT {
     private RouteStopsCache stopsCache;
     @Autowired
     private TripService tripService;
+    @Autowired
+    private DriverTrackingService trackingService;
     @Autowired
     private LeaderLock leaderLock;
     @Autowired
@@ -142,7 +150,7 @@ class FleetIT {
 
     private void enviarPosicion(UUID bus, UUID itinerary, double lat, double lng) throws Exception {
         String itineraryJson = itinerary == null ? "" : ",\"itineraryId\":\"%s\"".formatted(itinerary);
-        mvc.perform(post("/telemetry/position").with(conductor(companyId)).contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(post("/telemetry/position").with(admin()).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"busId\":\"%s\"%s,\"lat\":%s,\"lng\":%s}".formatted(bus, itineraryJson, lat, lng)))
                 .andExpect(status().isAccepted());
     }
@@ -174,7 +182,11 @@ class FleetIT {
     }
 
     private RequestPostProcessor conductor(UUID company) {
-        return jwt().jwt(j -> j.subject(UUID.randomUUID().toString()).claim("role", "CONDUCTOR")
+        return conductor(UUID.randomUUID(), company);
+    }
+
+    private RequestPostProcessor conductor(UUID id, UUID company) {
+        return jwt().jwt(j -> j.subject(id.toString()).claim("role", "CONDUCTOR")
                         .claim("companyId", company.toString()))
                 .authorities(new SimpleGrantedAuthority("ROLE_CONDUCTOR"));
     }
@@ -186,7 +198,7 @@ class FleetIT {
 
     @Test
     void laPosicionSeIngiereDeFormaAsincronaYSeConsultaComoUltimaConocida() throws Exception {
-        mvc.perform(post("/telemetry/position").with(conductor(companyId)).contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(post("/telemetry/position").with(admin()).contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"busId":"%s","itineraryId":"%s","lat":5.0,"lng":-74.5,"velocidad":80,"rumbo":300}
                                 """.formatted(busId, itineraryId)))
@@ -229,10 +241,10 @@ class FleetIT {
 
     @Test
     void descartaPosicionesInvalidasOAntiguas() throws Exception {
-        mvc.perform(post("/telemetry/position").with(conductor(companyId)).contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(post("/telemetry/position").with(admin()).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"busId\":\"%s\",\"lat\":95,\"lng\":-74}".formatted(busId)))
                 .andExpect(status().isBadRequest());
-        mvc.perform(post("/telemetry/position").with(conductor(companyId)).contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(post("/telemetry/position").with(admin()).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"busId\":\"%s\",\"lat\":5,\"lng\":-74,\"timestamp\":\"%s\"}"
                                 .formatted(busId, Instant.now().minus(2, ChronoUnit.HOURS))))
                 .andExpect(status().isBadRequest())
@@ -252,31 +264,21 @@ class FleetIT {
     }
 
     @Test
-    void soloSePublicanPosicionesDeBusesDeLaPropiaEmpresa() throws Exception {
-        // Conductor de la empresa del bus, sin itinerario: el bus opera algún viaje de su empresa.
-        enviarPosicion(conductor(companyId), busId, null).andExpect(status().isAccepted());
-
-        // Conductor de otra empresa, con y sin itinerario.
-        enviarPosicion(conductor(UUID.randomUUID()), busId, itineraryId)
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.error.code").value("NOT_YOUR_COMPANY"));
-        enviarPosicion(conductor(UUID.randomUUID()), busId, null)
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.error.code").value("NOT_YOUR_COMPANY"));
-
-        // Token sin companyId.
-        enviarPosicion(jwt().jwt(j -> j.subject(UUID.randomUUID().toString()).claim("role", "OPERADOR"))
+    void laIngestaManualEsSoloParaAdmin() throws Exception {
+        // US-173: conductor y operador ya no usan /telemetry/position (el conductor usa /driver/location).
+        enviarPosicion(conductor(companyId), busId, itineraryId).andExpect(status().isForbidden());
+        enviarPosicion(jwt().jwt(j -> j.subject(UUID.randomUUID().toString()).claim("role", "OPERADOR")
+                                .claim("companyId", companyId.toString()))
                         .authorities(new SimpleGrantedAuthority("ROLE_OPERADOR")), busId, null)
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.error.code").value("NOT_YOUR_COMPANY"));
+                .andExpect(status().isForbidden());
 
         // itineraryId de otro bus.
-        enviarPosicion(conductor(companyId), UUID.randomUUID(), itineraryId)
+        enviarPosicion(admin(), UUID.randomUUID(), itineraryId)
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("BUS_ITINERARY_MISMATCH"));
 
         // Itinerario inexistente.
-        enviarPosicion(conductor(companyId), busId, UUID.randomUUID())
+        enviarPosicion(admin(), busId, UUID.randomUUID())
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.error.code").value("ITINERARY_NOT_FOUND"));
     }
@@ -294,9 +296,20 @@ class FleetIT {
         mvc.perform(post("/trips/{id}/events", itineraryId).with(conductor(UUID.randomUUID()))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"tipo\":\"RETRASO\",\"descripcion\":\"Derrumbe en la vía\"}"))
-                .andExpect(status().isForbidden());
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("NOT_YOUR_COMPANY"));
 
+        // De su empresa pero sin estar asignado al viaje (US-121).
         mvc.perform(post("/trips/{id}/events", itineraryId).with(conductor(companyId))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tipo\":\"RETRASO\",\"descripcion\":\"Derrumbe en la vía\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("NOT_ASSIGNED"));
+
+        UUID conductorId = UUID.randomUUID();
+        jdbc.update("insert into trip_assignments (id, itinerary_id, conductor_id, rol, asignado_por, asignado_en) "
+                + "values (?, ?, ?, 'PRINCIPAL', ?, now())", UUID.randomUUID(), itineraryId, conductorId, UUID.randomUUID());
+        mvc.perform(post("/trips/{id}/events", itineraryId).with(conductor(conductorId, companyId))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"tipo\":\"RETRASO\",\"descripcion\":\"Derrumbe en la vía\",\"detalle\":{\"minutos\":40}}"))
                 .andExpect(status().isCreated())
@@ -428,7 +441,8 @@ class FleetIT {
         UUID bus = UUID.randomUUID();
         publicar(viaje, bus, Instant.now().minus(30, ChronoUnit.MINUTES), Instant.now().plus(8, ChronoUnit.HOURS));
 
-        new GpsSimulator(itineraryRepository, stopsCache, telemetryService, tripService, leaderLock, tx, clock)
+        new GpsSimulator(itineraryRepository, stopsCache, telemetryService, tripService, trackingService, leaderLock,
+                tx, clock)
                 .simulate();
         procesarEncoladas();
 
@@ -436,7 +450,12 @@ class FleetIT {
         mvc.perform(get("/itineraries/{id}/bus-position", viaje))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.estado").value("EN_RUTA"))
-                .andExpect(jsonPath("$.posicion.busId").value(bus.toString()));
+                .andExpect(jsonPath("$.posicion.busId").value(bus.toString()))
+                // US-174: el simulador marca el viaje como ACTIVO, igual que un conductor real.
+                .andExpect(jsonPath("$.estadoRastreo").value("ACTIVO"))
+                .andExpect(jsonPath("$.ultimaPosicionEn").isNotEmpty());
+        assertThat(jdbc.queryForObject("select count(*) from outbox where event_type = 'TrackingStatusChanged' "
+                + "and payload like ?", Long.class, "%" + viaje + "%")).isEqualTo(1L);
         mvc.perform(get("/trips/{id}/timeline", viaje))
                 .andExpect(jsonPath("$[0].tipo").value("INICIO"));
     }

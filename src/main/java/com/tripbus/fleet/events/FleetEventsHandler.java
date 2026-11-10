@@ -5,20 +5,23 @@ import com.tripbus.fleet.common.events.DomainEventHandler;
 import com.tripbus.fleet.common.events.EventEnvelope;
 import com.tripbus.fleet.domain.FleetItinerary;
 import com.tripbus.fleet.repository.FleetItineraryRepository;
+import com.tripbus.fleet.service.DriverAssignmentService;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.util.Set;
 import java.util.UUID;
 
-/** ItineraryPublished (asociar bus ↔ itinerario) e ItineraryCancelled. */
+/** ItineraryPublished (asociar bus ↔ itinerario) e ItineraryCancelled (y quitar sus conductores). */
 @Component
 public class FleetEventsHandler implements DomainEventHandler {
 
     private final FleetItineraryRepository repository;
+    private final DriverAssignmentService assignmentService;
 
-    public FleetEventsHandler(FleetItineraryRepository repository) {
+    public FleetEventsHandler(FleetItineraryRepository repository, DriverAssignmentService assignmentService) {
         this.repository = repository;
+        this.assignmentService = assignmentService;
     }
 
     @Override
@@ -42,7 +45,11 @@ public class FleetEventsHandler implements DomainEventHandler {
                         Instant.parse(p.path("fechaLlegada").asText())));
             }
         } else {
-            repository.findById(itineraryId).ifPresent(FleetItinerary::cancelar);
+            // US-121: el viaje cancelado se queda sin conductores asignados.
+            repository.findById(itineraryId).ifPresent(itinerary -> {
+                itinerary.cancelar();
+                assignmentService.removeAll(itinerary);
+            });
         }
     }
 }

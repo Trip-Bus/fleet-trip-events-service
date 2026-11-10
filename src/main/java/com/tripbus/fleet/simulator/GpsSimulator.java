@@ -1,10 +1,12 @@
 package com.tripbus.fleet.simulator;
 
+import com.tripbus.fleet.common.geo.Geo;
 import com.tripbus.fleet.common.redis.LeaderLock;
 import com.tripbus.fleet.domain.FleetItinerary;
 import com.tripbus.fleet.domain.RouteStop;
 import com.tripbus.fleet.domain.TripEventType;
 import com.tripbus.fleet.repository.FleetItineraryRepository;
+import com.tripbus.fleet.service.DriverTrackingService;
 import com.tripbus.fleet.service.RouteStopsCache;
 import com.tripbus.fleet.service.TelemetryService;
 import com.tripbus.fleet.service.TripService;
@@ -35,22 +37,27 @@ import java.util.concurrent.ThreadLocalRandom;
 public class GpsSimulator {
 
     private static final Logger log = LoggerFactory.getLogger(GpsSimulator.class);
+    static final String ORIGEN = "SIMULADOR";
+    private static final String PARADA = "parada";
 
     private final FleetItineraryRepository itineraryRepository;
     private final RouteStopsCache stopsCache;
     private final TelemetryService telemetryService;
     private final TripService tripService;
+    private final DriverTrackingService trackingService;
     private final LeaderLock leaderLock;
     private final TransactionTemplate tx;
     private final Clock clock;
 
     public GpsSimulator(FleetItineraryRepository itineraryRepository, RouteStopsCache stopsCache,
-                        TelemetryService telemetryService, TripService tripService, LeaderLock leaderLock,
+                        TelemetryService telemetryService, TripService tripService,
+                        DriverTrackingService trackingService, LeaderLock leaderLock,
                         TransactionTemplate tx, Clock clock) {
         this.itineraryRepository = itineraryRepository;
         this.stopsCache = stopsCache;
         this.telemetryService = telemetryService;
         this.tripService = tripService;
+        this.trackingService = trackingService;
         this.leaderLock = leaderLock;
         this.tx = tx;
         this.clock = clock;
@@ -86,34 +93,50 @@ public class GpsSimulator {
             Point p = interpolate(stops, elapsedMin);
             telemetryService.ingest(new PositionRequest(itinerary.getBusId(), itinerary.getItineraryId(), p.lat(),
                     p.lng(), p.speed(), p.bearing(), now));
+            // US-174: en QA el mapa muestra el estado de rastreo igual que con un conductor real.
+            trackingService.markSimulated(itinerary.getItineraryId(), now, p.lat(), p.lng());
         }
 
         tx.executeWithoutResult(s -> {
-            FleetItinerary it = itineraryRepository.findById(itinerary.getItineraryId()).orElseThrow();
+            // Bloqueado: la detección automática (US-177) de una posición del mismo viaje espera, y así
+            // ninguno de los dos duplica la LLEGADA_PARADA del otro.
+            FleetItinerary it = itineraryRepository.findByIdForUpdate(itinerary.getItineraryId()).orElseThrow();
             int last = it.getSimUltimaParada();
             if (last < 0) {
                 tripService.record(it, TripEventType.INICIO, "El bus salió de " + stops.get(0).getNombre(),
-                        Map.of("parada", stops.get(0).getNombre()), null, "SIMULADOR");
+                        Map.of(PARADA, stops.get(0).getNombre()), null, ORIGEN);
                 last = 0;
             }
-            for (int i = last + 1; i < stops.size() - 1; i++) {
-                if (stops.get(i).getMinutosDesdeSalida() <= elapsedMin) {
-                    tripService.record(it, TripEventType.LLEGADA_PARADA, "Llegada a " + stops.get(i).getNombre(),
-                            Map.of("parada", stops.get(i).getNombre(), "orden", stops.get(i).getOrden()), null,
-                            "SIMULADOR");
-                    last = i;
-                }
-            }
+            last = paradasIntermedias(it, stops, last, elapsedMin);
             if (!now.isBefore(it.getFechaLlegada()) && last < stops.size() - 1) {
                 RouteStop destino = stops.get(stops.size() - 1);
                 tripService.record(it, TripEventType.FIN, "El bus llegó a " + destino.getNombre(),
-                        Map.of("parada", destino.getNombre()), null, "SIMULADOR");
+                        Map.of(PARADA, destino.getNombre()), null, ORIGEN);
                 last = stops.size() - 1;
             }
             if (last != it.getSimUltimaParada()) {
                 it.avanzarSimulacion(last);
             }
         });
+    }
+
+    /**
+     * LLEGADA_PARADA de las paradas intermedias cuyo horario ya pasó, sin duplicar la que ya registró la
+     * detección automática (US-177). Devuelve el índice de la última parada anunciada.
+     */
+    private int paradasIntermedias(FleetItinerary it, List<RouteStop> stops, int last, double elapsedMin) {
+        int ultima = last;
+        for (int i = last + 1; i < stops.size() - 1; i++) {
+            RouteStop stop = stops.get(i);
+            if (stop.getMinutosDesdeSalida() <= elapsedMin) {
+                if (!tripService.existeLlegada(it.getItineraryId(), stop.getOrden())) {
+                    tripService.record(it, TripEventType.LLEGADA_PARADA, "Llegada a " + stop.getNombre(),
+                            Map.of(PARADA, stop.getNombre(), "orden", stop.getOrden()), null, ORIGEN);
+                }
+                ultima = i;
+            }
+        }
+        return ultima;
     }
 
     record Point(double lat, double lng, double speed, double bearing) {
@@ -141,12 +164,7 @@ public class GpsSimulator {
     }
 
     static double haversineKm(double lat1, double lon1, double lat2, double lon2) {
-        double r = 6371;
-        double dLat = Math.toRadians(lat2 - lat1);
-        double dLon = Math.toRadians(lon2 - lon1);
-        double h = Math.sin(dLat / 2) * Math.sin(dLat / 2)
-                + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-        return 2 * r * Math.asin(Math.sqrt(h));
+        return Geo.haversineKm(lat1, lon1, lat2, lon2);
     }
 
     static double bearing(double lat1, double lon1, double lat2, double lon2) {

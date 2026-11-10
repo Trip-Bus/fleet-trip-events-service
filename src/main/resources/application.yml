@@ -43,6 +43,13 @@ spring:
         jwt:
           jwk-set-uri: ${IDENTITY_JWKS_URI:http://localhost:18001/.well-known/jwks.json}
 
+# HT-10: logs. Texto legible con traceId, spanId, requestId e itineraryId (del MDC) por defecto; con
+# LOG_FORMAT=json, una línea JSON por evento en formato ECS (logging.structured.format.console=ecs, ver
+# ObservabilityEnvironment), que incluye todo el MDC.
+logging:
+  pattern:
+    console: "%clr(%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}){faint} %clr(%5p) %clr([%X{traceId:-},%X{spanId:-}] [%X{requestId:-}] [%X{itineraryId:-}]){magenta} %clr(%-40.40logger{39}){cyan} %clr(:){faint} %m%n%wEx"
+
 server:
   port: ${SERVER_PORT:18005}
   shutdown: graceful
@@ -59,6 +66,11 @@ management:
   metrics:
     tags:
       application: fleet-trip-events-service
+  # HT-10: trazas. Se muestrea TRACING_SAMPLING (10 % por defecto) y se exportan por OTLP/HTTP solo si
+  # OTEL_EXPORTER_OTLP_ENDPOINT tiene valor (vacío = no se exportan; ver ObservabilityEnvironment).
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING:0.1}
   info:
     env:
       enabled: true
@@ -69,7 +81,15 @@ info:
     commit: ${APP_COMMIT:local}
 
 tripbus:
+  # HT-10: "json" activa los logs ECS (ver ObservabilityEnvironment). En prod es json por defecto.
+  log-format: ${LOG_FORMAT:text}
+  # HT-10: URL del servidor que muestra Swagger (p. ej. la del API Gateway). Vacía: la del propio servicio.
+  openapi:
+    server-url: ${OPENAPI_SERVER_URL:}
   internal-token: ${INTERNAL_API_TOKEN:tripbus_internal_qa_token}
+  services:
+    # US-121: validar al conductor que se asigna a un viaje (GET /internal/users/{id}).
+    identity-url: ${IDENTITY_URL:http://localhost:18001}
   events:
     enabled: ${EVENTS_ENABLED:true}
     consumer-enabled: ${EVENTS_CONSUMER_ENABLED:true}
@@ -87,6 +107,31 @@ tripbus:
     # (de fechaSalida - before a fechaLlegada + after; nunca si el viaje está cancelado).
     tracking-window-before: 30m
     tracking-window-after: 30m
+    # US-173: lecturas del celular con precisión peor que esto (metros) se descartan.
+    max-accuracy-m: 100
+    # US-174: una sesión ACTIVO sin posiciones por más de esto pasa a SIN_SENAL.
+    signal-timeout: 60s
+    # US-171: ítems del checklist de salida; todos deben venir en true para iniciar el viaje.
+    checklist-items: manifiestoRevisado,documentosBus,lucesYLlantas,botiquinYExtintor
+    # US-177: llegada a parada a menos de stop-radius-m de la siguiente pendiente (stop-radius-ends-m
+    # para la primera y la última); RETRASO automático desde delay-threshold-min (y cada 15 min más);
+    # DESVIO a más de deviation-m de la ruta en 3 lecturas seguidas.
+    stop-radius-m: 150
+    stop-radius-ends-m: 300
+    delay-threshold-min: 10
+    deviation-m: 1000
+    # US-180: EtaUpdated como máximo una vez por este intervalo por viaje.
+    eta-publish-interval: 30s
+    # HT-08: después de detail-days se deja una posición por minuto por viaje; después de keep-days se
+    # borran (la puntualidad queda en trip_punctuality). batch-size: filas por sentencia.
+    positions:
+      detail-days: 7
+      keep-days: 90
+      batch-size: 5000
   jobs:
     simulator-interval-ms: 5000
+    # US-174/US-175: job de estados de rastreo (SIN_SENAL, FINALIZADO), en un solo nodo.
+    tracking-status-ms: 15000
     outbox-relay-ms: 500
+    # HT-08: limpieza de posiciones antiguas (America/Bogota), en un solo nodo.
+    positions-retention-cron: "0 0 4 * * *"

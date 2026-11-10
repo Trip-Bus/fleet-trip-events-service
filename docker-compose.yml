@@ -68,6 +68,7 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       IDENTITY_JWKS_URI: http://host.docker.internal:18001/.well-known/jwks.json
+      IDENTITY_URL: http://host.docker.internal:18001
       CATALOG_URL: http://host.docker.internal:18002
     extra_hosts:
       - "host.docker.internal:host-gateway"

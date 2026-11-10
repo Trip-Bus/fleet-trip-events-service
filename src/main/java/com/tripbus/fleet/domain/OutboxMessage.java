@@ -27,10 +27,15 @@ public class OutboxMessage {
     @Column(name = "publicado_en")
     private Instant publicadoEn;
 
+    /** HT-10: contexto W3C de la traza que generó el evento (null si no había traza). */
+    @Column(name = "trace_parent")
+    private String traceParent;
+
     protected OutboxMessage() {
     }
 
-    public OutboxMessage(String eventType, String payload, Instant now) {
+    public OutboxMessage(String eventType, String payload, Instant now, String traceParent) {
+        this.traceParent = traceParent;
         this.id = UUID.randomUUID();
         this.eventType = eventType;
         this.payload = payload;

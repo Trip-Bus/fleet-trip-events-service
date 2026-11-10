@@ -2,6 +2,7 @@ package com.tripbus.fleet.common.events;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.tripbus.fleet.common.observability.TracePropagation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -32,12 +33,15 @@ public class EventPublisher {
     private final EventProperties properties;
     private final String source;
     private final AtomicLong published = new AtomicLong();
+    private final TracePropagation tracing;
 
     public EventPublisher(
             StringRedisTemplate redis,
             ObjectMapper objectMapper,
             EventProperties properties,
-            @Value("${spring.application.name}") String source) {
+            @Value("${spring.application.name}") String source,
+            TracePropagation tracing) {
+        this.tracing = tracing;
         this.redis = redis;
         this.objectMapper = objectMapper;
         this.properties = properties;
@@ -46,12 +50,23 @@ public class EventPublisher {
 
     /** Publica de inmediato. Lanza excepción si Redis no está disponible. */
     public String publish(String type, Object payload) {
-        return publish(UUID.randomUUID().toString(), type, payload);
+        String eventId = UUID.randomUUID().toString();
+        publish(eventId, type, payload);
+        return eventId;
     }
 
-    public String publish(String eventId, String type, Object payload) {
+    /** Publica con un eventId dado, con el contexto de la traza en curso. */
+    public void publish(String eventId, String type, Object payload) {
+        publish(eventId, type, payload, tracing.actual());
+    }
+
+    /**
+     * Publica con un eventId y un traceparent dados (el relay del outbox usa el id del outbox, para
+     * deduplicar, y la traza guardada con el mensaje). HT-10: el consumidor sigue esa traza.
+     */
+    public void publish(String eventId, String type, Object payload, String traceparent) {
         if (!properties.enabled()) {
-            return eventId;
+            return;
         }
         Map<String, String> fields = new LinkedHashMap<>();
         fields.put("eventId", eventId);
@@ -59,6 +74,9 @@ public class EventPublisher {
         fields.put("source", source);
         fields.put("occurredAt", Instant.now().toString());
         fields.put("payload", toJson(payload));
+        if (traceparent != null) {
+            fields.put(TracePropagation.CAMPO, traceparent);
+        }
 
         MapRecord<String, String, String> record = StreamRecords.newRecord().in(properties.stream()).ofMap(fields);
         redis.opsForStream().add(record);
@@ -66,7 +84,6 @@ public class EventPublisher {
             redis.opsForStream().trim(properties.stream(), properties.maxLen(), true);
         }
         log.debug("Evento publicado {} {}", type, eventId);
-        return eventId;
     }
 
     /** Publica sin propagar errores (para eventos cuya pérdida no rompe la consistencia). */

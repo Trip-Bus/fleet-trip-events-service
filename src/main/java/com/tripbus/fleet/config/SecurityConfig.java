@@ -24,14 +24,20 @@ public class SecurityConfig {
             JsonSecurityHandlers handlers,
             @Value("${tripbus.internal-token}") String internalToken) throws Exception {
         http
-                .csrf(AbstractHttpConfigurer::disable)
+                // CSRF no aplica: API sin estado (STATELESS, sin sesión ni cookies). La autenticación va en
+                // el header Authorization (JWT) o X-Internal-Token, que el navegador no envía solo en una
+                // petición de otro sitio, así que no hay credencial ambiental que un atacante pueda usar.
+                .csrf(AbstractHttpConfigurer::disable) // NOSONAR java:S4502: API REST sin estado con bearer token
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(a -> a
                         .requestMatchers("/actuator/health/**", "/actuator/info", "/actuator/prometheus").permitAll()
                         .requestMatchers("/internal/**").hasRole(InternalTokenFilter.INTERNAL_ROLE)
                         // Seguimiento del bus y línea de tiempo del viaje: lectura pública.
                         .requestMatchers(HttpMethod.GET, "/buses/*/position", "/itineraries/*/bus-position",
+                                "/itineraries/*/eta", "/itineraries/*/track",
                                 "/trips/*/timeline").permitAll()
+                        // US-181: enlace compartido con un familiar (POST /share-links sí exige usuario).
+                        .requestMatchers(HttpMethod.GET, "/share/*").permitAll()
                         // Swagger (en prod springdoc está apagado y estas rutas dan 404) y página de error.
                         .requestMatchers(HttpMethod.GET, "/v3/api-docs/**", "/swagger-ui/**",
                                 "/swagger-ui.html").permitAll()

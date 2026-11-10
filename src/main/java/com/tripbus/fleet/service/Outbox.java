@@ -1,6 +1,7 @@
 package com.tripbus.fleet.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.tripbus.fleet.common.observability.TracePropagation;
 import com.tripbus.fleet.domain.OutboxMessage;
 import com.tripbus.fleet.repository.OutboxRepository;
 import org.springframework.stereotype.Component;
@@ -9,15 +10,20 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
 
-/** Escribe eventos en la tabla outbox dentro de la transacción del cambio de estado. */
+/**
+ * Escribe eventos en la tabla outbox dentro de la transacción del cambio de estado, con el contexto de la
+ * traza en curso (HT-10: el relay lo pasa al evento y el consumidor sigue la misma traza).
+ */
 @Component
 public class Outbox {
 
     private final OutboxRepository repository;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final TracePropagation tracing;
 
-    public Outbox(OutboxRepository repository, ObjectMapper objectMapper, Clock clock) {
+    public Outbox(OutboxRepository repository, ObjectMapper objectMapper, Clock clock, TracePropagation tracing) {
+        this.tracing = tracing;
         this.repository = repository;
         this.objectMapper = objectMapper;
         this.clock = clock;
@@ -26,7 +32,8 @@ public class Outbox {
     @Transactional(propagation = Propagation.MANDATORY)
     public void add(String eventType, Object payload) {
         try {
-            repository.save(new OutboxMessage(eventType, objectMapper.writeValueAsString(payload), clock.instant()));
+            repository.save(new OutboxMessage(eventType, objectMapper.writeValueAsString(payload), clock.instant(),
+                    tracing.actual()));
         } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
             throw new IllegalArgumentException(e);
         }

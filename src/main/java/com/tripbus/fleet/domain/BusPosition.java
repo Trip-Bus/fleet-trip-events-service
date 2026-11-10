@@ -43,11 +43,19 @@ public class BusPosition {
     @Column(name = "recibido_en", nullable = false)
     private Instant recibidoEn;
 
+    /** US-173: conductor que envió la posición (null: simulador GPS o datos anteriores). */
+    @Column(name = "conductor_id")
+    private UUID conductorId;
+
+    /** Precisión reportada por el celular, en metros. */
+    private Double precision;
+
     protected BusPosition() {
     }
 
     public BusPosition(String eventId, UUID busId, UUID itineraryId, double lat, double lng, Double velocidad,
-                       Double rumbo, Instant registradoEn, Instant recibidoEn) {
+                       Double rumbo, Instant registradoEn, Instant recibidoEn, UUID conductorId,
+                       Double precision) {
         this.eventId = eventId;
         this.busId = busId;
         this.itineraryId = itineraryId;
@@ -57,6 +65,8 @@ public class BusPosition {
         this.rumbo = rumbo;
         this.registradoEn = registradoEn;
         this.recibidoEn = recibidoEn;
+        this.conductorId = conductorId;
+        this.precision = precision;
     }
 
     public UUID getBusId() {
@@ -85,5 +95,13 @@ public class BusPosition {
 
     public Instant getRegistradoEn() {
         return registradoEn;
+    }
+
+    public UUID getConductorId() {
+        return conductorId;
+    }
+
+    public Double getPrecision() {
+        return precision;
     }
 }
